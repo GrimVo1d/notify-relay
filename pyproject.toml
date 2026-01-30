@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "notify-relay"
+version = "0.1.0"
+description = "Transactional notification relay service (email + webhook) on Django/DRF and Celery"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "GrimVo1d" }]
+dependencies = [
+    "Django>=5.0,<5.2",
+    "djangorestframework>=3.15",
+    "djangorestframework-simplejwt>=5.3",
+    "drf-spectacular>=0.27",
+    "celery>=5.3",
+    "redis>=5.0",
+    "psycopg[binary]>=3.1",
+    "django-environ>=0.11",
+    "requests>=2.32",
+    "python-json-logger>=2.0",
+    "prometheus-client>=0.20",
+    "passlib[argon2]>=1.7",
+    "python-ulid>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-django>=4.8",
+    "factory-boy>=3.3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
