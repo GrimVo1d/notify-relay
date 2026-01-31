@@ -1,0 +1,110 @@
+x-app-env: &app-env
+  DJANGO_SETTINGS_MODULE: notify_relay.settings.dev
+  SECRET_KEY: ${SECRET_KEY:-dev-insecure-change-me}
+  DEBUG: ${DEBUG:-1}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+  DATABASE_URL: postgres://nr:nr@db:5432/notify_relay
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/1
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+  SMTP_HOST: mailhog
+  SMTP_PORT: "1025"
+  DEFAULT_FROM_EMAIL: no-reply@notify-relay.local
+  JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-dev-insecure-jwt}
+  API_KEY_HASH_PEPPER: ${API_KEY_HASH_PEPPER:-dev-insecure-pepper}
+  WEBHOOK_TIMEOUT_S: "10"
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+
+x-app-build: &app-build
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: notify-relay:dev
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  api:
+    <<: *app-build
+    command: ["api"]
+    environment:
+      <<: *app-env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/live"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  worker-high:
+    <<: *app-build
+    command: ["worker", "high"]
+    environment:
+      <<: *app-env
+      CELERY_CONCURRENCY: "8"
+
+  worker-default:
+    <<: *app-build
+    command: ["worker", "default"]
+    environment:
+      <<: *app-env
+      CELERY_CONCURRENCY: "4"
+
+  worker-low:
+    <<: *app-build
+    command: ["worker", "low"]
+    environment:
+      <<: *app-env
+      CELERY_CONCURRENCY: "2"
+
+  beat:
+    <<: *app-build
+    command: ["beat"]
+    environment:
+      <<: *app-env
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nr
+      POSTGRES_PASSWORD: nr
+      POSTGRES_DB: notify_relay
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nr -d notify_relay"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    restart: unless-stopped
+    ports:
+      - "${MAILHOG_SMTP_PORT:-1025}:1025"
+      - "${MAILHOG_HTTP_PORT:-8025}:8025"
+
+volumes:
+  pgdata:
