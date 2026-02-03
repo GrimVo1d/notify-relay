@@ -48,9 +48,11 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "drf_spectacular",
+    "apps.core",
 ]
 
 MIDDLEWARE = [
+    "apps.core.middleware.RequestIDMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -146,7 +148,7 @@ LOGGING = {
             "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
         },
         "json": {
-            "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
+            "()": "apps.core.logging.JsonFormatter",
             "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
         },
     },
