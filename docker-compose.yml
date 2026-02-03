@@ -71,7 +71,7 @@ services:
       <<: *app-env
 
   db:
-    image: postgres:16-alpine
+    image: postgres:16.2-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: nr
@@ -88,7 +88,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.2-alpine
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
