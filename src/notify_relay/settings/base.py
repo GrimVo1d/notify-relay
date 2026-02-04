@@ -29,6 +29,8 @@ env = environ.Env(
     SMTP_USER=(str, ""),
     SMTP_PASSWORD=(str, ""),
     SMTP_TLS=(bool, False),
+    API_KEY_HASH_PEPPER=(str, "dev-insecure-pepper"),
+    JWT_SIGNING_KEY=(str, "dev-insecure-jwt"),
 )
 
 env_file = BASE_DIR / ".env"
@@ -136,6 +138,9 @@ EMAIL_HOST_USER = env("SMTP_USER")
 EMAIL_HOST_PASSWORD = env("SMTP_PASSWORD")
 EMAIL_USE_TLS = env("SMTP_TLS")
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
+
+API_KEY_HASH_PEPPER = env("API_KEY_HASH_PEPPER")
+JWT_SIGNING_KEY = env("JWT_SIGNING_KEY")
 
 LOG_LEVEL = env("LOG_LEVEL")
 LOG_FORMAT = env("LOG_FORMAT")
