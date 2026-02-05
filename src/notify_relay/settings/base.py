@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "drf_spectacular",
     "apps.core",
+    "apps.templating",
 ]
 
 MIDDLEWARE = [
