@@ -43,6 +43,12 @@ makemigrations:
 shell:
 	$(COMPOSE) exec api python manage.py shell
 
+dbshell:
+	$(COMPOSE) exec db psql -U nr -d notify_relay
+
+migrations-check:
+	$(COMPOSE) exec api python manage.py makemigrations --check --dry-run
+
 test:
 	pytest -q
 
