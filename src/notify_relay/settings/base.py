@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "apps.core",
     "apps.templating",
+    "apps.messages_api",
 ]
 
 MIDDLEWARE = [
