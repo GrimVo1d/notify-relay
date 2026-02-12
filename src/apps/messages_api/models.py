@@ -53,9 +53,7 @@ class Message(models.Model):
     rendered_subject = models.TextField(blank=True, default="")
     rendered_body = models.TextField()
     context = models.JSONField(default=dict, blank=True)
-    priority = models.CharField(
-        max_length=16, choices=Priority.choices, default=Priority.DEFAULT
-    )
+    priority = models.CharField(max_length=16, choices=Priority.choices, default=Priority.DEFAULT)
     status = models.CharField(
         max_length=16, choices=MessageStatus.choices, default=MessageStatus.QUEUED
     )

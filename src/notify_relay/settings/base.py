@@ -32,6 +32,19 @@ env = environ.Env(
     SMTP_TLS=(bool, False),
     API_KEY_HASH_PEPPER=(str, "dev-insecure-pepper"),
     JWT_SIGNING_KEY=(str, "dev-insecure-jwt"),
+    WEBHOOK_TIMEOUT_S=(int, 10),
+    WEBHOOK_BLOCKED_NETWORKS=(
+        list,
+        [
+            "127.0.0.0/8",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+            "::1/128",
+            "fc00::/7",
+        ],
+    ),
 )
 
 env_file = BASE_DIR / ".env"
@@ -156,6 +169,8 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
 
 API_KEY_HASH_PEPPER = env("API_KEY_HASH_PEPPER")
 JWT_SIGNING_KEY = env("JWT_SIGNING_KEY")
+WEBHOOK_TIMEOUT_S = env("WEBHOOK_TIMEOUT_S")
+WEBHOOK_BLOCKED_NETWORKS = env("WEBHOOK_BLOCKED_NETWORKS")
 
 LOG_LEVEL = env("LOG_LEVEL")
 LOG_FORMAT = env("LOG_FORMAT")
