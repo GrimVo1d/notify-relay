@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.templating",
     "apps.messages_api",
+    "apps.ratelimit",
 ]
 
 MIDDLEWARE = [
