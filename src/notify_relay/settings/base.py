@@ -72,6 +72,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "apps.core.middleware.RequestIDMiddleware",
+    "apps.core.middleware.RateLimitMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -172,6 +173,11 @@ API_KEY_HASH_PEPPER = env("API_KEY_HASH_PEPPER")
 JWT_SIGNING_KEY = env("JWT_SIGNING_KEY")
 WEBHOOK_TIMEOUT_S = env("WEBHOOK_TIMEOUT_S")
 WEBHOOK_BLOCKED_NETWORKS = env("WEBHOOK_BLOCKED_NETWORKS")
+
+RATE_LIMIT_ENABLED = env.bool("RATE_LIMIT_ENABLED", default=True)
+RATE_LIMIT_DEFAULT_PER_MIN = env.int("RATE_LIMIT_DEFAULT_PER_MIN", default=100)
+RATE_LIMIT_DEFAULT_BURST = env.int("RATE_LIMIT_DEFAULT_BURST", default=200)
+RATE_LIMIT_REDIS_CLIENT_FACTORY: object | None = None
 
 LOG_LEVEL = env("LOG_LEVEL")
 LOG_FORMAT = env("LOG_FORMAT")
