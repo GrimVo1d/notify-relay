@@ -33,6 +33,7 @@ env = environ.Env(
     API_KEY_HASH_PEPPER=(str, "dev-insecure-pepper"),
     JWT_SIGNING_KEY=(str, "dev-insecure-jwt"),
     WEBHOOK_TIMEOUT_S=(int, 10),
+    WEBHOOK_HMAC_SECRET=(str, "dev-insecure-webhook-secret"),
     WEBHOOK_BLOCKED_NETWORKS=(
         list,
         [
@@ -196,6 +197,7 @@ API_KEY_HASH_PEPPER = env("API_KEY_HASH_PEPPER")
 JWT_SIGNING_KEY = env("JWT_SIGNING_KEY")
 WEBHOOK_TIMEOUT_S = env("WEBHOOK_TIMEOUT_S")
 WEBHOOK_BLOCKED_NETWORKS = env("WEBHOOK_BLOCKED_NETWORKS")
+WEBHOOK_HMAC_SECRET = env("WEBHOOK_HMAC_SECRET")
 
 RATE_LIMIT_ENABLED = env.bool("RATE_LIMIT_ENABLED", default=True)
 RATE_LIMIT_DEFAULT_PER_MIN = env.int("RATE_LIMIT_DEFAULT_PER_MIN", default=100)
