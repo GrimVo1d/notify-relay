@@ -118,10 +118,8 @@ def _payload_matches(existing: Message, new: dict[str, Any]) -> bool:
 
 
 def enqueue(message_id: str) -> None:
-    """Schedule a message for delivery.
+    """Schedule a message for delivery via the matching Celery task."""
+    from tasks.delivery import enqueue_for  # noqa: PLC0415 — break import cycle
 
-    Step-19 wires this up to the real Celery task. Until then we only log
-    the intent so the rest of the pipeline (commit, response, tests) can
-    work end-to-end against an in-process consumer.
-    """
-    logger.info("message.enqueued message_id=%s", message_id)
+    msg = Message.objects.select_related().get(pk=message_id)
+    enqueue_for(msg)
