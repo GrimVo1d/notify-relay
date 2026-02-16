@@ -159,8 +159,30 @@ SPECTACULAR_SETTINGS = {
 CELERY_BROKER_URL = env("CELERY_BROKER_URL")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND")
 CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TIMEZONE = TIME_ZONE
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_TASK_TIME_LIMIT = 60
+CELERY_TASK_SOFT_TIME_LIMIT = 50
+
+from kombu import Queue  # noqa: E402
+
+CELERY_TASK_QUEUES = (
+    Queue("high"),
+    Queue("default"),
+    Queue("low"),
+)
+CELERY_TASK_DEFAULT_QUEUE = "default"
+CELERY_TASK_DEFAULT_ROUTING_KEY = "default"
+
+CELERY_TASK_ROUTES = {
+    "tasks.delivery.send_email": {"queue": "default"},
+    "tasks.delivery.send_webhook": {"queue": "default"},
+    "tasks.scheduler.dispatch_scheduled": {"queue": "default"},
+    "tasks.scheduler.cleanup_old_messages": {"queue": "low"},
+    "tasks.scheduler.refresh_metrics": {"queue": "low"},
+}
 
 EMAIL_HOST = env("SMTP_HOST")
 EMAIL_PORT = env("SMTP_PORT")
