@@ -17,6 +17,15 @@ IDEMPOTENCY_HEADER_META = "HTTP_IDEMPOTENCY_KEY"
 IDEMPOTENCY_HEADER_NAME = "Idempotency-Key"
 
 
+def _error(code: str, message: str, http_status: int) -> Response:
+    """Standard 4xx response shape: ``{"code": "...", "detail": "..."}``.
+
+    Clients should branch on ``code`` (machine-readable) rather than ``detail``
+    (human-readable, may change).
+    """
+    return Response({"code": code, "detail": message}, status=http_status)
+
+
 class MessageViewSet(viewsets.GenericViewSet):
     """API for transactional messages.
 
@@ -44,14 +53,18 @@ class MessageViewSet(viewsets.GenericViewSet):
     def create(self, request: Request, *args, **kwargs) -> Response:
         idempotency_key = (request.META.get(IDEMPOTENCY_HEADER_META) or "").strip()
         if not idempotency_key:
-            return Response(
-                {"detail": f"{IDEMPOTENCY_HEADER_NAME} header is required"},
-                status=status.HTTP_400_BAD_REQUEST,
+            return _error(
+                "idempotency_key_missing",
+                f"{IDEMPOTENCY_HEADER_NAME} header is required",
+                status.HTTP_400_BAD_REQUEST,
             )
 
         ser = MessageCreateSerializer(data=request.data)
         if not ser.is_valid():
-            return Response(ser.errors, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+            return Response(
+                {"code": "validation_error", "errors": ser.errors},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
         api_key = request.auth if isinstance(request.auth, ApiKey) else None
 
@@ -62,13 +75,14 @@ class MessageViewSet(viewsets.GenericViewSet):
                 validated_data=dict(ser.validated_data),
             )
         except IdempotencyConflict as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+            return _error("idempotency_conflict", str(exc), status.HTTP_409_CONFLICT)
         except TemplateNotFound as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+            return _error("template_not_found", str(exc), status.HTTP_422_UNPROCESSABLE_ENTITY)
         except RenderError as exc:
-            return Response(
-                {"detail": f"template render failed: {exc}"},
-                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            return _error(
+                "template_render_failed",
+                f"template render failed: {exc}",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
         return Response(MessageReadSerializer(msg).data, status=status.HTTP_202_ACCEPTED)
