@@ -186,6 +186,23 @@ CELERY_TASK_ROUTES = {
     "tasks.scheduler.refresh_metrics": {"queue": "low"},
 }
 
+from celery.schedules import crontab  # noqa: E402
+
+CELERY_BEAT_SCHEDULE = {
+    "dispatch-scheduled": {
+        "task": "tasks.scheduler.dispatch_scheduled",
+        "schedule": 60.0,
+    },
+    "cleanup-old-messages": {
+        "task": "tasks.scheduler.cleanup_old_messages",
+        "schedule": crontab(hour="3", minute="0"),
+    },
+    "refresh-metrics": {
+        "task": "tasks.scheduler.refresh_metrics",
+        "schedule": 30.0,
+    },
+}
+
 EMAIL_HOST = env("SMTP_HOST")
 EMAIL_PORT = env("SMTP_PORT")
 EMAIL_HOST_USER = env("SMTP_USER")
