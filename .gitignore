@@ -34,7 +34,15 @@ media/
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
+.vim/
+*.code-workspace
+
+# os
 .DS_Store
+Thumbs.db
+desktop.ini
 
 # build
 build/
