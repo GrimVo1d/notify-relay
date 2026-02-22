@@ -81,5 +81,8 @@ def cleanup_old_messages() -> int:
 
 @shared_task(name="tasks.scheduler.refresh_metrics")
 def refresh_metrics() -> int:
-    """Refresh Prometheus gauges. Step-24 owns the actual gauge updates."""
-    return 0
+    """Refresh Prometheus gauges from the database."""
+    from apps.core.metrics import refresh_gauges_from_db  # noqa: PLC0415
+
+    refresh_gauges_from_db()
+    return 1
