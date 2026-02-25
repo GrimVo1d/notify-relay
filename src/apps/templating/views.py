@@ -30,6 +30,7 @@ class TemplateViewSet(viewsets.GenericViewSet):
 
     permission_classes = [permissions.IsAdminUser]
     queryset = Template.objects.alive()
+    serializer_class = TemplateReadSerializer
     lookup_field = "name"
     lookup_value_regex = r"[\w.-]+"
 
