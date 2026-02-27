@@ -24,6 +24,7 @@ from django.utils import timezone
 from apps.channels.base import Channel, ChannelResult
 from apps.channels.email import EmailChannel
 from apps.channels.webhook import WebhookChannel
+from apps.core.metrics import delivery_attempts_total, delivery_duration, messages_total
 from apps.messages_api.models import (
     AttemptResult,
     DeadLetter,
@@ -79,12 +80,14 @@ def _dispatch(task: Task, message_id: str, channel: Channel) -> str:
         msg.save(update_fields=["status", "updated_at"])
 
     started = timezone.now()
-    try:
-        result = channel.send(msg)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("channel raised unexpectedly")
-        result = ChannelResult(success=False, transient=True, error_message=repr(exc))
+    with delivery_duration.labels(channel=msg.channel).time():
+        try:
+            result = channel.send(msg)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("channel raised unexpectedly")
+            result = ChannelResult(success=False, transient=True, error_message=repr(exc))
     finished = timezone.now()
+    delivery_attempts_total.labels(channel=msg.channel, result=_map_result(result)).inc()
 
     attempt_no = msg.attempts.count() + 1
     DeliveryAttempt.objects.create(
@@ -101,15 +104,18 @@ def _dispatch(task: Task, message_id: str, channel: Channel) -> str:
     if result.success:
         msg.status = MessageStatus.SENT
         msg.save(update_fields=["status", "updated_at"])
+        messages_total.labels(channel=msg.channel, status=MessageStatus.SENT).inc()
         return "sent"
 
     if not result.transient:
         _move_to_dead_letter(msg, MessageStatus.FAILED, f"permanent: {result.error_message}")
+        messages_total.labels(channel=msg.channel, status=MessageStatus.FAILED).inc()
         return "failed"
 
     retries_done = task.request.retries
     if retries_done >= MAX_RETRIES:
         _move_to_dead_letter(msg, MessageStatus.DEAD, f"exhausted: {result.error_message}")
+        messages_total.labels(channel=msg.channel, status=MessageStatus.DEAD).inc()
         return "dead"
 
     raise TransientError(result.error_message or "transient failure")
