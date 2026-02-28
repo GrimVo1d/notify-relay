@@ -1,0 +1,169 @@
+{
+  "title": "notify-relay",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "",
+  "tags": ["notify-relay", "celery", "django"],
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "channel",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+        "query": "label_values(notify_relay_messages_total, channel)",
+        "multi": true,
+        "includeAll": true,
+        "current": { "selected": false, "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Sent / min",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(notify_relay_messages_total{status=\"sent\",channel=~\"$channel\"}[1m])) * 60",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "msg/m", "color": { "mode": "thresholds" } } }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Failed / min",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(notify_relay_messages_total{status=~\"failed|dead\",channel=~\"$channel\"}[1m])) * 60",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "msg/m",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Queue depth (total)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "sum(notify_relay_queue_depth{channel=~\"$channel\"})", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "msg",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 100 },
+              { "color": "red", "value": 1000 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "DLQ size",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [{ "expr": "notify_relay_dlq_size", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "msg",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 100 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Delivery attempts rate by result",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "sum by(result) (rate(notify_relay_delivery_attempts_total{channel=~\"$channel\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Delivery duration P50 / P95 / P99",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5,  sum by(le,channel) (rate(notify_relay_delivery_duration_seconds_bucket{channel=~\"$channel\"}[5m])))",
+          "refId": "A",
+          "legendFormat": "P50 {{channel}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by(le,channel) (rate(notify_relay_delivery_duration_seconds_bucket{channel=~\"$channel\"}[5m])))",
+          "refId": "B",
+          "legendFormat": "P95 {{channel}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by(le,channel) (rate(notify_relay_delivery_duration_seconds_bucket{channel=~\"$channel\"}[5m])))",
+          "refId": "C",
+          "legendFormat": "P99 {{channel}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Queue depth by channel",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "notify_relay_queue_depth{channel=~\"$channel\"}",
+          "refId": "A",
+          "legendFormat": "{{channel}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "msg" } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Messages by terminal status (rate)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum by(status,channel) (rate(notify_relay_messages_total{channel=~\"$channel\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{channel}} / {{status}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    }
+  ]
+}
