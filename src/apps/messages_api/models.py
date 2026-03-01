@@ -72,6 +72,14 @@ class Message(models.Model):
             models.Index(fields=["status", "scheduled_at"], name="message_status_sched_idx"),
             models.Index(fields=["created_at"], name="message_created_idx"),
             models.Index(fields=["recipient"], name="message_recipient_idx"),
+            # Hot path: Beat dispatcher scans `queued` messages with elapsed
+            # scheduled_at every minute. A partial index over just the queued
+            # subset keeps this scan tiny regardless of total table size.
+            models.Index(
+                fields=["scheduled_at"],
+                name="message_queued_partial_idx",
+                condition=models.Q(status="queued"),
+            ),
         ]
         ordering = ["-created_at"]
 
