@@ -12,7 +12,7 @@
 | `REDIS_URL` | url | `redis://localhost:6379/0` | Общий Redis (rate-limit, кэш) |
 | `CELERY_BROKER_URL` | url | `redis://localhost:6379/1` | Celery broker |
 | `CELERY_RESULT_BACKEND` | url | `redis://localhost:6379/2` | Celery results |
-| `SMTP_HOST` / `PORT` / `USER` / `PASSWORD` / `TLS` | — | mailhog | SMTP-параметры |
+| `SMTP_HOST` / `PORT` / `USER` / `PASSWORD` / `TLS` | — | mailpit | SMTP-параметры |
 | `DEFAULT_FROM_EMAIL` | str | `no-reply@notify-relay.local` | From: для email-канала |
 | `JWT_SIGNING_KEY` | str | `dev-insecure-jwt` | Подпись JWT. **Обязательно сменить** |
 | `API_KEY_HASH_PEPPER` | str | `dev-insecure-pepper` | Перец для argon2-хеша API-ключей. **Сменить и хранить** |
@@ -63,7 +63,7 @@ docker compose exec api python manage.py migrate
 | `beat` | `celery beat` | расписание (раз в минуту) |
 | `db` | `postgres:16` | данные |
 | `redis` | `redis:7` | broker + results + rate-limit |
-| `mailhog` | `mailhog/mailhog` | dev-only SMTP-стенд |
+| `mailpit` | `axllent/mailpit` | dev-only SMTP-стенд с UI и REST API на :8025 |
 
 ## Метрики и SLI
 

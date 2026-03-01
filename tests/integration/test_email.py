@@ -1,6 +1,6 @@
 """Integration test for the email channel against Django's locmem backend.
 
-A full MailHog-against-the-real-SMTP exercise lives in the broader e2e
+A full Mailpit-against-the-real-SMTP exercise lives in the broader e2e
 suite (see ``tests/integration/test_e2e.py``). This one only checks that
 the channel translates a stored Message into a properly addressed
 EmailMessage and surfaces SMTP errors as transient/permanent correctly.

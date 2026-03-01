@@ -19,7 +19,7 @@ docker compose exec api python manage.py migrate
 docker compose exec api python manage.py createsuperuser
 # API:        http://localhost:8000/api/v1/
 # OpenAPI:    http://localhost:8000/api/schema/swagger-ui/
-# MailHog UI: http://localhost:8025/
+# Mailpit UI: http://localhost:8025/
 # Metrics:    http://localhost:8000/metrics
 # Liveness:   http://localhost:8000/health/live
 # Readiness:  http://localhost:8000/health/ready

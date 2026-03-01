@@ -1,7 +1,7 @@
 """End-to-end coverage of SPEC §10 scenarios.
 
 The suite exercises the API → service → Celery task → channel → state
-machine round-trip in-process. Real Celery workers, Postgres, MailHog and
+machine round-trip in-process. Real Celery workers, Postgres, Mailpit and
 network calls live in step-27's CI matrix.
 """
 
