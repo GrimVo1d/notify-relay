@@ -153,9 +153,26 @@ SIMPLE_JWT = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "notify-relay API",
-    "DESCRIPTION": "Transactional notification relay service.",
+    "DESCRIPTION": (
+        "Transactional notification relay: HTTP API for queuing email and "
+        "outbound webhook deliveries with templates, idempotency, retries, "
+        "rate limiting and dead-letter handling."
+    ),
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "TAGS": [
+        {"name": "messages", "description": "Queue and inspect notifications"},
+        {"name": "templates", "description": "Message templates and versions"},
+        {"name": "api-keys", "description": "Service API key management (staff only)"},
+        {"name": "auth", "description": "JWT obtain / refresh"},
+    ],
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SCHEMA_PATH_PREFIX": r"/api/v1",
+    "ENUM_NAME_OVERRIDES": {
+        "ChannelEnum": "apps.templating.models.Channel",
+        "MessageStatusEnum": "apps.messages_api.models.MessageStatus",
+        "PriorityEnum": "apps.messages_api.models.Priority",
+    },
 }
 
 CELERY_BROKER_URL = env("CELERY_BROKER_URL")
