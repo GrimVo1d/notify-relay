@@ -246,11 +246,10 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {
         "plain": {
-            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+            "()": "apps.core.logging.PlainFormatter",
         },
         "json": {
             "()": "apps.core.logging.JsonFormatter",
-            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
         },
     },
     "handlers": {
