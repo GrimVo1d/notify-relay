@@ -10,7 +10,8 @@ from __future__ import annotations
 from datetime import timedelta
 from unittest.mock import patch
 
-import responses
+import httpx
+import respx
 from django.core import mail
 from django.test import override_settings
 from django.utils import timezone
@@ -96,9 +97,8 @@ def test_webhook_retry_then_success(api_key, webhook_template) -> None:
         template_version=webhook_template,
     )
 
-    with responses.RequestsMock() as rsps:
-        rsps.post(url, status=503)
-        rsps.post(url, status=200)
+    with respx.mock() as router:
+        router.post(url).mock(side_effect=[httpx.Response(503), httpx.Response(200)])
 
         fake_task = MagicMock()
         fake_task.request.retries = 0
