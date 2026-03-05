@@ -91,7 +91,7 @@ make lint                       # ruff + black + isort
 - [docs/PERFORMANCE.md](docs/PERFORMANCE.md) — SLO, capacity math, тюнинг
 - [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — STRIDE + чеклист безопасности
 - [docs/RUNBOOK.md](docs/RUNBOOK.md) — playbook для on-call
-- [docs/ADR/](docs/ADR/) — Architecture Decision Records (идемпотентность, rate-limit, channels, id)
+- [docs/ADR/](docs/ADR/) — Architecture Decision Records (идемпотентность, rate-limit, channels, id, logging)
 - [docs/grafana-dashboard.json](docs/grafana-dashboard.json) — Grafana-дашборда на Prometheus-метрики (import as-is)
 - `/api/schema/swagger-ui/` — интерактивный OpenAPI у запущенного инстанса
 
