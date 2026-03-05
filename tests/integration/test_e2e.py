@@ -1,7 +1,7 @@
 """End-to-end coverage of the core delivery scenarios.
 
 The suite exercises the API → service → Celery task → channel → state
-machine round-trip in-process. Real Celery workers, Postgres, MailHog and
+machine round-trip in-process. Real Celery workers, Postgres, Mailpit and
 network calls are out of scope here.
 """
 
