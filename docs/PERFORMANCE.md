@@ -1,22 +1,22 @@
 # PERFORMANCE — notify-relay
 
-Цели по производительности, capacity-математика, и куда смотреть для тюнинга.
+Performance goals, capacity math, and where to look when tuning.
 
 ## SLO (Service Level Objectives)
 
-| Метрика | Цель |
+| Metric | Target |
 |---|---|
-| `POST /messages` P95 latency | < 150 ms (postgres insert + enqueue, без внешнего IO) |
-| `POST /messages` success rate (2xx или 4xx по делу) | ≥ 99.9% за 28 дней |
+| `POST /messages` P95 latency | < 150 ms (Postgres insert + enqueue, no external IO) |
+| `POST /messages` success rate (2xx or expected 4xx) | ≥ 99.9% over 28 days |
 | Email delivery P95 (queue → SMTP accept) | < 30 s |
 | Webhook delivery P95 (queue → HTTP 2xx) | < 2 s |
-| Сообщений `queued` старше 5 мин | 0 (вне инцидентов) |
+| Messages `queued` for longer than 5 min | 0 (outside incidents) |
 
-## Capacity на одну ноду
+## Capacity per node
 
-Конфиг базовой ноды: 4 CPU / 8 GB RAM. Сервисы делят узлы:
+Baseline node: 4 CPU / 8 GB RAM. Services share nodes:
 
-| Поды на узле | CPU req | Mem req |
+| Pods per node | CPU req | Mem req |
 |---|---|---|
 | api × 1 (gunicorn 4 workers, sync) | 1.5 | 1 GB |
 | worker-high × 1 (concurrency=8) | 0.5 | 0.5 GB |
@@ -24,24 +24,24 @@
 | worker-low × 1 (concurrency=2) | 0.2 | 0.3 GB |
 | beat × 1 | 0.1 | 0.1 GB |
 
-### Throughput API
+### API throughput
 
-Sync-gunicorn под Django + 1 PG insert на запрос (с обвязкой):
+Sync gunicorn under Django + 1 PG insert per request (with overhead):
 
 ```
 T_request ≈ T_validation + T_render + T_db_insert + T_redis_enqueue
          ≈ 5 ms   + 2 ms   + 8 ms          + 1 ms          ≈ 16 ms
 ```
 
-С 4 worker'ами sync: 4 × (1000 / 16) ≈ **250 RPS на ноду**. SLO 200 RPS → запас 25%.
+With 4 sync workers: 4 × (1000 / 16) ≈ **250 RPS per node**. SLO target 200 RPS → 25% headroom.
 
-Узкие места при росте:
-- PG connections: gunicorn 4 worker × `CONN_MAX_AGE` без pgbouncer = 4 коннекта. На 5 нод = 20. PG `max_connections=100` → потолок ~25 нод без pgbouncer. **С pgbouncer (transaction pooling) — практически неограниченно** для нашей нагрузки.
-- Шаблонный рендер не кешируется (`Template(src)` каждый раз). На 200 RPS со средней шаблонкой это ~400 ms CPU/секунду на ноду — **3% от 4 CPU**, оставляем как есть.
+Bottlenecks as you scale:
+- PG connections: gunicorn 4 workers × `CONN_MAX_AGE` without pgbouncer = 4 connections. Across 5 nodes = 20. PG `max_connections=100` → ceiling around 25 nodes without pgbouncer. **With pgbouncer (transaction pooling) — effectively unlimited** for our load.
+- Template render is not cached (a fresh `Template(src)` each time). At 200 RPS with an average template that's ~400 ms of CPU per second per node — **3% of 4 CPU**, leave it.
 
-### Throughput Email
+### Email throughput
 
-Один SMTP отправка = ~150 ms на handshake + ~50 ms на DATA. С concurrency=8 в worker-high и concurrency=4 в worker-default:
+A single SMTP send ≈ 150 ms handshake + 50 ms DATA. With concurrency=8 in worker-high and concurrency=4 in worker-default:
 
 ```
 worker-high:    8 / 0.2 s ≈ 40 email/sec
@@ -49,26 +49,26 @@ worker-default: 4 / 0.2 s ≈ 20 email/sec
 Σ              ≈ 60 email/sec ≈ 3600 email/min
 ```
 
-Реальный bottleneck — внешний MTA. Большинство провайдеров (Postmark, SES) лимитируют ≈ 14 email/sec на аккаунт без warm-up. Нужен либо больший лимит у провайдера, либо параллельные кредиты от нескольких.
+The real bottleneck is the upstream MTA. Most providers (Postmark, SES) cap at ≈ 14 email/sec per account without warm-up. You need either a higher provider limit or parallel credits from several.
 
-### Throughput Webhook
+### Webhook throughput
 
-Webhook = 1 HTTP-POST с timeout 10 с, обычно отрабатывает < 200 ms. С `concurrency=4 (worker-default)` ≈ 20 webhook/sec, ≈ 1200/min.
+A webhook = 1 HTTP POST with a 10s timeout, typically < 200 ms. With `concurrency=4 (worker-default)` ≈ 20 webhook/sec ≈ 1200/min.
 
-Если получатели медленные (P95 > 1 с) — concurrency не помогает, нужно поднимать `--concurrency` пропорционально. Но осторожно: каждый concurrent worker — это коннект к PG, см. лимит выше.
+If recipients are slow (P95 > 1s), concurrency doesn't help; raise `--concurrency` proportionally. Carefully — each concurrent worker means a PG connection (see ceiling above).
 
-## Профили нагрузки на БД
+## DB load profile
 
-| Запрос | Частота | Стоимость | Индекс |
+| Query | Frequency | Cost | Index |
 |---|---|---|---|
 | `INSERT INTO messages` | ~ RPS | ~5 ms | PK (ULID), unique `(api_key_id, idempotency_key)` |
-| `SELECT ... WHERE api_key_id=? AND idempotency_key=?` (idempotency lookup) | ~ RPS | ~1 ms | unique idx (выше) |
-| `SELECT ... WHERE status='queued' AND scheduled_at<=now()` (Beat) | 1/min | зависит от queue_depth | `message_status_sched_idx` (status, scheduled_at) |
-| `SELECT ... WHERE created_at < now() - interval '90 days'` (cleanup) | 1/day | full scan по этой строки нет, идёт через индекс | `message_created_idx` |
+| `SELECT ... WHERE api_key_id=? AND idempotency_key=?` (idempotency lookup) | ~ RPS | ~1 ms | unique idx (above) |
+| `SELECT ... WHERE status='queued' AND scheduled_at<=now()` (Beat) | 1/min | depends on queue_depth | `message_status_sched_idx` (status, scheduled_at) |
+| `SELECT ... WHERE created_at < now() - interval '90 days'` (cleanup) | 1/day | index-driven, not a full scan | `message_created_idx` |
 
-### Что должно показывать `EXPLAIN ANALYZE`
+### What `EXPLAIN ANALYZE` should show
 
-Idempotency lookup на горячих данных:
+Idempotency lookup on hot data:
 ```
 Index Scan using messages_message_idempotency_unique on messages
   Index Cond: ((api_key_id = $1) AND (idempotency_key = $2))
@@ -76,7 +76,7 @@ Planning Time: 0.1 ms
 Execution Time: < 1 ms
 ```
 
-Если вместо `Index Scan` видишь `Seq Scan` — индекс не используется. Проверить статистику (`ANALYZE messages`), типы параметров.
+If you see `Seq Scan` instead of `Index Scan`, the index isn't being used. Check statistics (`ANALYZE messages`) and parameter types.
 
 Beat dispatch:
 ```
@@ -86,16 +86,16 @@ Index Scan using message_status_sched_idx on messages
 Limit  (cost=... rows=200)
 ```
 
-При больших `queue_depth` (> 100k) — добавить `partial index`:
+At large `queue_depth` (> 100k) add a partial index:
 ```sql
 CREATE INDEX message_pending_idx
 ON messages (scheduled_at)
 WHERE status = 'queued';
 ```
 
-## Микро-бенчмарки
+## Micro-benchmarks
 
-Локальный прогон `pytest-benchmark` на критических местах (планируется в next iteration):
+Local `pytest-benchmark` on critical paths (planned next iteration):
 
 ```
 bench_hmac_signature:        ~5 µs/op        (negligible)
@@ -104,29 +104,29 @@ bench_argon2_verify:         ~25 ms/op       (intentionally slow, 4 rounds)
 bench_idempotency_lookup:    ~700 µs/op      (PG over loopback)
 ```
 
-`bench_argon2_verify` — самая дорогая операция, поэтому она не on the hot path API (rate-limit middleware использует HASH(api_key)[:16] для bucket-identity, **не** argon2 verify). Argon2 verify запускается только в DRF auth, который кешируется DRF'ом на запрос.
+`bench_argon2_verify` is the most expensive operation, so it is not on the API's hot path (the rate-limit middleware uses `HASH(api_key)[:16]` for bucket identity, **not** an argon2 verify). Argon2 verify runs only in DRF auth, which DRF caches per request.
 
 ## Load test (planned)
 
-`locust` или `k6`. Стенд:
+`locust` or `k6`. Bench:
 
-- 1 нода (api + worker-default), Postgres / Redis на той же машине.
+- 1 node (api + worker-default), Postgres / Redis on the same machine.
 - 1k pre-seeded `ApiKey`, 10 pre-seeded `TemplateVersion`.
-- Сценарий «happy path»: 80% — `POST /messages` с email-каналом, 20% — webhook на эхо-сервер (`https://httpbin.org/status/200`).
+- Happy-path scenario: 80% `POST /messages` with email channel, 20% webhook against an echo server (`https://httpbin.org/status/200`).
 
-Целевые цифры:
-- P95 `POST` < 150 ms при 200 RPS — **зелёный**
-- P95 `POST` < 500 ms при 400 RPS — **серый, точка деградации**
-- Stable error rate < 0.1% — **зелёный**
+Target numbers:
+- P95 `POST` < 150 ms at 200 RPS — **green**
+- P95 `POST` < 500 ms at 400 RPS — **grey, degradation point**
+- Stable error rate < 0.1% — **green**
 
-Результаты прогона будут опубликованы в [`docs/LOAD_TEST_RESULTS.md`](LOAD_TEST_RESULTS.md) (после реализации load-test инструментария).
+Run results will land in [`docs/LOAD_TEST_RESULTS.md`](LOAD_TEST_RESULTS.md) (after the load-test tooling is built).
 
-## Тюнинг под нагрузку — чек-лист
+## Tuning checklist
 
-В порядке возрастания усилий:
+In order of increasing effort:
 
-1. **+pgbouncer** перед PG — снимает потолок connections.
-2. **Materialized View** для аналитики (кол-во messages по `status` за период) — не для горячего пути, но для админских дашбордов.
-3. **Кеш TemplateVersion** — read-mostly, изменяется редко. `lru_cache(1024)` по `(name, version)`.
-4. **Async Django view** для `POST /messages` (Django 5 ASGI + asyncpg) — но это требует переписать middleware и services под async. Выигрыш заметен только при >500 RPS на нод. **Не делать преждевременно.**
-5. **Партиционирование `messages`** по `created_at` (monthly) — когда таблица >100 GB.
+1. **+pgbouncer** in front of PG — removes the connection ceiling.
+2. **Materialized View** for analytics (message counts by `status` over a period) — not for the hot path, but for admin dashboards.
+3. **TemplateVersion cache** — read-mostly, rarely changes. `lru_cache(1024)` keyed by `(name, version)`.
+4. **Async Django views** for `POST /messages` (Django 5 ASGI + asyncpg) — but that requires rewriting middleware and services as async. Visible only above 500 RPS/node. **Don't do this prematurely.**
+5. **Partition `messages`** by `created_at` (monthly) — when the table exceeds 100 GB.

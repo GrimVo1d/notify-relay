@@ -1,31 +1,30 @@
-# ADR-0001: Хранение Idempotency-Key в БД, а не в Redis
+# ADR-0001: Store Idempotency-Key in the DB, not in Redis
 
 **Status:** Accepted
 **Date:** 2026-02-28
 
-## Контекст
+## Context
 
-`POST /messages` принимает обязательный заголовок `Idempotency-Key`. Повтор с тем же ключом за окно 24ч должен вернуть тот же `message.id` без создания дубликата; повтор с другим payload'ом — `409 Conflict`. Нужно решить, где хранить соответствие `(api_key, idempotency_key) → message_id`.
+`POST /messages` requires an `Idempotency-Key` header. A retry with the same key within a 24h window must return the same `message.id` without creating a duplicate; a retry with a different payload must return `409 Conflict`. We need to decide where to store the `(api_key, idempotency_key) → message_id` mapping.
 
-## Решение
+## Decision
 
-Храним идемпотентность **внутри основной таблицы `messages`** через unique constraint `(api_key_id, idempotency_key)`. Lookup на повторном POST'е — это `SELECT … WHERE api_key_id = ? AND idempotency_key = ?`, индексированный по уникальному ключу. Cleanup устаревших ключей делает Beat-задача `cleanup_old_messages`, удаляя `messages.created_at < now() - 90d` (см. [ADR-0004](0004-message-id-ulid.md) — retention).
+Store idempotency **inside the main `messages` table** via a unique constraint on `(api_key_id, idempotency_key)`. The retry lookup is `SELECT … WHERE api_key_id = ? AND idempotency_key = ?`, served by the unique index. Cleanup of stale keys is handled by the `cleanup_old_messages` Beat task, which deletes rows where `messages.created_at < now() - 90d` (see [ADR-0004](0004-message-id-ulid.md) for retention).
 
-## Последствия
+## Consequences
 
-**+** Один источник правды: при идемпотент-повторе мы возвращаем актуальный статус сообщения (`sent`/`failed`/`dead`), а не только «id из кэша». Это важно для UX клиентов, которые ретраят при сетевых проблемах.
-**+** Идемпотентность переживает рестарт Redis и потерю любого вспомогательного хранилища.
-**+** Транзакционная атомарность: вставка `Message` и запись «идемпотент-маркера» — это одна и та же строка, нет окна несогласованности.
-**−** Каждый POST — лишний `SELECT` по индексу даже на первый запрос. Цена — единицы микросекунд при горячем индексе.
-**−** TTL не «бесплатный» (как в Redis с EXPIRE) — требует Beat-задачу. Уже есть для retention сообщений, так что не добавляет инфраструктуры.
+**+** Single source of truth: on an idempotent retry we return the current status of the message (`sent`/`failed`/`dead`), not just an "id from cache". That matters for clients that retry on network errors.
+**+** Idempotency survives Redis flaps and the loss of any auxiliary store.
+**+** Transactional atomicity: inserting the `Message` and recording the "idempotency marker" is the same row — there is no inconsistency window.
+**−** Every POST pays for an extra index `SELECT`, even on the first request. The cost is a few microseconds on a hot index.
+**−** TTL is not "free" (the way it is with Redis `EXPIRE`) — it needs a Beat task. We already have one for message retention, so no new infrastructure.
 
-## Альтернативы
+## Alternatives
 
-1. **Redis SET с TTL=24h.** Быстрее на lookup'ах, бесплатный expire. Минус: при флапе Redis теряется идемпотентность (= возможны дубли). Для transactional notifications это критично.
-2. **Гибрид: Redis для горячего кэша + БД как fallback.** Усложняет код (две точки чтения, инвалидация), даёт мало: PG-индекс по `(api_key_id, idempotency_key)` UNIQUE и так достаточен на ожидаемых RPS (≤ 200/нода).
-3. **Отдельная таблица `idempotency_records` с FK на messages.** Лишний JOIN на каждом lookup'е, никакого выигрыша.
+1. **Redis `SET` with TTL=24h.** Faster lookup, free expiration. Downside: if Redis flaps, idempotency is lost (= duplicates possible). For transactional notifications that is unacceptable.
+2. **Hybrid: Redis as a hot cache + DB as fallback.** Adds complexity (two read paths, invalidation) for little gain: the PG unique index on `(api_key_id, idempotency_key)` is enough at the expected RPS (≤ 200/node).
+3. **A separate `idempotency_records` table with an FK to messages.** Extra JOIN on every lookup, no upside.
 
-## Связано
+## Related
 
-- [SPEC §FR-1, §6](../SPEC.md)
-- [ADR-0002](0002-rate-limit-token-bucket-lua.md) — там, наоборот, Redis уместен, и объяснено почему.
+- [ADR-0002](0002-rate-limit-token-bucket-lua.md) — by contrast, that's where Redis is the right choice, and it explains why.

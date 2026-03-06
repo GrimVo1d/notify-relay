@@ -1,103 +1,103 @@
 # DEPLOYMENT — notify-relay
 
-## Переменные окружения
+## Environment variables
 
-| Имя | Тип | По умолчанию | Описание |
+| Name | Type | Default | Description |
 |---|---|---|---|
-| `DJANGO_SETTINGS_MODULE` | str | `notify_relay.settings.dev` | Профиль настроек: `dev` / `test` / `prod` |
-| `SECRET_KEY` | str | `dev-insecure-change-me` | Django secret. **Обязательно сменить в проде** |
-| `DEBUG` | bool | `0` | `1` только в dev |
-| `ALLOWED_HOSTS` | csv | `*` | Список хостов (запятая) |
+| `DJANGO_SETTINGS_MODULE` | str | `notify_relay.settings.dev` | Settings profile: `dev` / `test` / `prod` |
+| `SECRET_KEY` | str | `dev-insecure-change-me` | Django secret. **Must be changed in prod** |
+| `DEBUG` | bool | `0` | `1` for dev only |
+| `ALLOWED_HOSTS` | csv | `*` | Comma-separated hostnames |
 | `DATABASE_URL` | url | `sqlite:///…` | `postgres://user:pass@host:5432/db` |
-| `REDIS_URL` | url | `redis://localhost:6379/0` | Общий Redis (rate-limit, кэш) |
+| `REDIS_URL` | url | `redis://localhost:6379/0` | Shared Redis (rate-limit, cache) |
 | `CELERY_BROKER_URL` | url | `redis://localhost:6379/1` | Celery broker |
 | `CELERY_RESULT_BACKEND` | url | `redis://localhost:6379/2` | Celery results |
-| `SMTP_HOST` / `PORT` / `USER` / `PASSWORD` / `TLS` | — | mailpit | SMTP-параметры |
-| `DEFAULT_FROM_EMAIL` | str | `no-reply@notify-relay.local` | From: для email-канала |
-| `JWT_SIGNING_KEY` | str | `dev-insecure-jwt` | Подпись JWT. **Обязательно сменить** |
-| `API_KEY_HASH_PEPPER` | str | `dev-insecure-pepper` | Перец для argon2-хеша API-ключей. **Сменить и хранить** |
-| `WEBHOOK_HMAC_SECRET` | str | `dev-insecure-webhook-secret` | Глобальный секрет для HMAC-подписи webhook'ов |
-| `WEBHOOK_TIMEOUT_S` | int | `10` | Таймаут на исходящий POST |
-| `WEBHOOK_BLOCKED_NETWORKS` | csv | приватные подсети | Список CIDR — запрет SSRF |
-| `RATE_LIMIT_ENABLED` | bool | `1` | Глобальный выключатель rate-limit |
-| `RATE_LIMIT_DEFAULT_PER_MIN` | int | `100` | Лимит для запросов без API-key |
-| `RATE_LIMIT_DEFAULT_BURST` | int | `200` | Burst для запросов без API-key |
+| `SMTP_HOST` / `PORT` / `USER` / `PASSWORD` / `TLS` | — | mailpit | SMTP settings |
+| `DEFAULT_FROM_EMAIL` | str | `no-reply@notify-relay.local` | `From:` for the email channel |
+| `JWT_SIGNING_KEY` | str | `dev-insecure-jwt` | JWT signing key. **Must be changed** |
+| `API_KEY_HASH_PEPPER` | str | `dev-insecure-pepper` | Pepper for argon2 API-key hashes. **Change and persist** |
+| `WEBHOOK_HMAC_SECRET` | str | `dev-insecure-webhook-secret` | Global secret for outbound webhook HMAC |
+| `WEBHOOK_TIMEOUT_S` | int | `10` | Timeout on outbound POST |
+| `WEBHOOK_BLOCKED_NETWORKS` | csv | private subnets | CIDR block list — SSRF guard |
+| `RATE_LIMIT_ENABLED` | bool | `1` | Global rate-limit switch |
+| `RATE_LIMIT_DEFAULT_PER_MIN` | int | `100` | Limit for requests without an API key |
+| `RATE_LIMIT_DEFAULT_BURST` | int | `200` | Burst for requests without an API key |
 | `LOG_LEVEL` | str | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `LOG_FORMAT` | str | `plain` | `plain` локально, `json` в проде |
+| `LOG_FORMAT` | str | `plain` | `plain` locally, `json` in prod |
 
-Подробности дефолтных значений — в [`src/notify_relay/settings/base.py`](../src/notify_relay/settings/base.py) и [`.env.example`](../.env.example).
+See [`src/notify_relay/settings/base.py`](../src/notify_relay/settings/base.py) and [`.env.example`](../.env.example) for the canonical defaults.
 
-## Прод-чеклист
+## Production checklist
 
-- [ ] Подменены **все** `dev-insecure-*` секреты — `SECRET_KEY`, `JWT_SIGNING_KEY`, `API_KEY_HASH_PEPPER`, `WEBHOOK_HMAC_SECRET`.
-- [ ] `DEBUG=0`, `ALLOWED_HOSTS` — конкретный список доменов.
+- [ ] Replace **every** `dev-insecure-*` secret — `SECRET_KEY`, `JWT_SIGNING_KEY`, `API_KEY_HASH_PEPPER`, `WEBHOOK_HMAC_SECRET`.
+- [ ] `DEBUG=0`, `ALLOWED_HOSTS` set to a concrete list of domains.
 - [ ] `DJANGO_SETTINGS_MODULE=notify_relay.settings.prod`.
-- [ ] `LOG_FORMAT=json`, логи собираются централизованно.
-- [ ] `DATABASE_URL` — отдельная управляемая Postgres-инстанция (RDS/CloudSQL), пользовательский пароль не в репо.
-- [ ] Применены миграции: `manage.py migrate --check`.
-- [ ] Сервисы развёрнуты раздельно: `api` (gunicorn), `worker-high`, `worker-default`, `worker-low`, `beat`. **`beat` — ровно один инстанс** (он source-of-truth для расписания).
-- [ ] LB указывает на `/health/ready` для healthcheck, на `/health/live` — для liveness.
-- [ ] `/metrics` доступен только из внутренней сети (или защищён basic-auth).
-- [ ] Backup стратегия для Postgres настроена (точка восстановления + retention 14+ дней).
-- [ ] Redis настроен с `maxmemory-policy=allkeys-lru` и persistence (RDB или AOF — в зависимости от тоstoy).
-- [ ] HSTS, secure cookies, CSRF — обеспечены `prod.py` (см. файл).
+- [ ] `LOG_FORMAT=json`, logs shipped centrally.
+- [ ] `DATABASE_URL` points at a managed Postgres instance (RDS/CloudSQL); the password is not committed.
+- [ ] Migrations applied: `manage.py migrate --check`.
+- [ ] Services deployed separately: `api` (gunicorn), `worker-high`, `worker-default`, `worker-low`, `beat`. **`beat` is a single instance** (it is the source of truth for the schedule).
+- [ ] The load balancer hits `/health/ready` for the readiness check and `/health/live` for liveness.
+- [ ] `/metrics` is reachable only from the internal network (or guarded by basic auth).
+- [ ] Postgres backups configured (point-in-time recovery + 14+ days of retention).
+- [ ] Redis configured with `maxmemory-policy=allkeys-lru` and persistence (RDB or AOF, depending on durability needs).
+- [ ] HSTS, secure cookies, CSRF — enforced by `prod.py` (see the file).
 
-## Развёртывание docker-compose (одна машина / dev-stage)
+## docker-compose deploy (single host / dev-stage)
 
 ```bash
-cp .env.example .env  # отредактировать секреты
+cp .env.example .env  # edit secrets
 docker compose pull
 docker compose build
 docker compose up -d
 docker compose exec api python manage.py migrate
 ```
 
-Состав сервисов:
+Services:
 
-| Сервис | Команда | Назначение |
+| Service | Command | Role |
 |---|---|---|
-| `api` | `gunicorn notify_relay.wsgi` | HTTP-слой, порт 8000 |
-| `worker-high` | `celery worker -Q high` | OTP, security-критичные |
-| `worker-default` | `celery worker -Q default` | бизнес-уведомления |
-| `worker-low` | `celery worker -Q low` | digest, cleanup, metrics |
-| `beat` | `celery beat` | расписание (раз в минуту) |
-| `db` | `postgres:16` | данные |
+| `api` | `gunicorn notify_relay.wsgi` | HTTP layer, port 8000 |
+| `worker-high` | `celery worker -Q high` | OTPs, security-critical |
+| `worker-default` | `celery worker -Q default` | business notifications |
+| `worker-low` | `celery worker -Q low` | digests, cleanup, metrics |
+| `beat` | `celery beat` | scheduler (every minute) |
+| `db` | `postgres:16` | data store |
 | `redis` | `redis:7` | broker + results + rate-limit |
-| `mailpit` | `axllent/mailpit` | dev-only SMTP-стенд с UI и REST API на :8025 |
+| `mailpit` | `axllent/mailpit` | dev-only SMTP stand with UI + REST on :8025 |
 
-## Метрики и SLI
+## Metrics and SLIs
 
-`/metrics` отдаёт Prometheus exposition:
+`/metrics` exposes a Prometheus endpoint:
 
-- `notify_relay_messages_total{channel,status}` — счётчик финальных переходов (sent / failed / dead).
-- `notify_relay_delivery_attempts_total{channel,result}` — счётчик попыток (success / transient_error / permanent_error).
-- `notify_relay_delivery_duration_seconds{channel}` — гистограмма времени в `channel.send()`.
-- `notify_relay_queue_depth{channel}` — gauge, кол-во messages со статусом `queued` (обновляется Beat'ом каждые 30 с).
-- `notify_relay_dlq_size` — gauge, размер dead-letter таблицы.
+- `notify_relay_messages_total{channel,status}` — counter of terminal transitions (sent / failed / dead).
+- `notify_relay_delivery_attempts_total{channel,result}` — counter of attempts (success / transient_error / permanent_error).
+- `notify_relay_delivery_duration_seconds{channel}` — histogram of time spent in `channel.send()`.
+- `notify_relay_queue_depth{channel}` — gauge: number of messages in `queued` (refreshed by Beat every 30s).
+- `notify_relay_dlq_size` — gauge: dead-letter table size.
 
-Рекомендуемые SLI:
-- **API success-rate**: процент `2xx` на `POST /messages`. Цель ≥ 99.9%.
-- **Delivery P95 latency**: `histogram_quantile(0.95, rate(notify_relay_delivery_duration_seconds_bucket[5m]))`. Цель < 30 с (email) / < 2 с (webhook).
-- **Queue saturation**: `notify_relay_queue_depth` стабильно растёт → недостаточно воркеров либо канал лежит.
-- **DLQ growth-rate**: `rate(notify_relay_dlq_size[1h])` > 0 → надо разбирать.
+Suggested SLIs:
+- **API success rate**: percentage of `2xx` on `POST /messages`. Target ≥ 99.9%.
+- **Delivery P95 latency**: `histogram_quantile(0.95, rate(notify_relay_delivery_duration_seconds_bucket[5m]))`. Target < 30s (email) / < 2s (webhook).
+- **Queue saturation**: `notify_relay_queue_depth` rising steadily → not enough workers or a channel is down.
+- **DLQ growth rate**: `rate(notify_relay_dlq_size[1h])` > 0 → time to investigate.
 
-## Безопасность
+## Security
 
-- API-ключи хранятся как `argon2(secret + pepper)`; в БД нет plain-text секретов. Восстановить ключ нельзя — только перевыпустить.
-- JWT-токены — короткий access (15 мин) + refresh (7 дней). Подпись HS256.
-- Webhook-доставка: проверка URL (запрет приватных подсетей), HMAC-SHA256 подпись тела, no-redirect, таймаут 10 с.
-- Rate-limit: 100/мин default + per-key override. Bucket в Redis, atomic Lua.
-- Все секреты — через env. `.env` — в `.gitignore`.
+- API keys are stored as `argon2(secret + pepper)`; no plain-text secrets in the DB. Keys cannot be recovered — only reissued.
+- JWT tokens: short access (15 min) + refresh (7 days). HS256 signature.
+- Webhook delivery: URL validation (private subnets blocked), HMAC-SHA256 body signature, no redirects, 10s timeout.
+- Rate-limit: 100/min default + per-key override. Bucket in Redis, atomic Lua.
+- All secrets via env. `.env` is in `.gitignore`.
 
 ## Troubleshooting
 
-| Симптом | Где смотреть | Что делать |
+| Symptom | Where to look | What to do |
 |---|---|---|
-| `/health/ready` отдаёт `503` | сам ответ — JSON с `checks` | падает либо `db`, либо `redis`. Проверить `DATABASE_URL` / `REDIS_URL`, доступность портов |
-| Сообщения копятся в `queued` | `notify_relay_queue_depth` растёт | проверить, что `worker-default` запущен и не в crashloop; `celery -A notify_relay inspect active` |
-| `429` на каждом запросе | `Retry-After` в ответе | бакет исчерпан. Проверить `rate_limit_per_min` ключа в админке; временно отключить `RATE_LIMIT_ENABLED=0` |
-| Все webhook'и `422` | в логе `webhook URL resolves to a blocked address range` | хост резолвится в приватную подсеть. Проверить DNS-результат `dig`/`host`; добавить публичный IP получателя в allow-list (через изменение `WEBHOOK_BLOCKED_NETWORKS`) |
-| `502/503` на API | gunicorn-логи | вероятно crashloop. `docker compose logs api --tail=200`. Часто — мигратор не отработал |
-| `transient_error` на email | `delivery_attempts.smtp_code` | SMTP 4xx — временная проблема (greylisting, rate-limit на стороне MTA). Подождать backoff |
-| Beat не дёргает задачи | `worker.*` потребляет `default`-задачи нормально | проверить, что **ровно один** beat-инстанс запущен. Два beat-а → задачи дублируются и тормозят |
-| OpenAPI-схема пустая | `/api/schema/` | `drf-spectacular` не нашёл `serializer_class` у view. См. предупреждения в `manage.py spectacular --file /tmp/s.yml` |
+| `/health/ready` returns `503` | the JSON response itself, `checks` field | either `db` or `redis` is failing. Verify `DATABASE_URL` / `REDIS_URL` and port reachability |
+| Messages pile up in `queued` | `notify_relay_queue_depth` grows | check that `worker-default` is up and not in a crash loop; `celery -A notify_relay inspect active` |
+| `429` on every request | `Retry-After` header | the bucket is exhausted. Check the key's `rate_limit_per_min` in the admin; temporarily set `RATE_LIMIT_ENABLED=0` |
+| Every webhook returns `422` | log line `webhook URL resolves to a blocked address range` | the host resolves into a private subnet. Check the DNS answer with `dig`/`host`; allow the recipient's public IP via `WEBHOOK_BLOCKED_NETWORKS` |
+| `502/503` from the API | gunicorn logs | likely a crash loop. `docker compose logs api --tail=200`. Often the migrator never ran |
+| `transient_error` on email | `delivery_attempts.smtp_code` | SMTP 4xx — temporary issue (greylisting, MTA rate-limit). Wait out the backoff |
+| Beat doesn't fire tasks | `worker.*` still consumes `default` tasks fine | check that **exactly one** beat instance is running. Two beats → duplicate tasks and slow processing |
+| OpenAPI schema is empty | `/api/schema/` | `drf-spectacular` couldn't find a `serializer_class` on a view. See warnings from `manage.py spectacular --file /tmp/s.yml` |

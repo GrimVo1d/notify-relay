@@ -1,117 +1,117 @@
 # RUNBOOK — notify-relay
 
-Операционный playbook для on-call. Ориентирован на алерты из Prometheus / Grafana (`docs/grafana-dashboard.json`).
+On-call playbook. Aligned with the Prometheus / Grafana alerts in `docs/grafana-dashboard.json`.
 
-## Правила работы
+## Ground rules
 
-1. Сначала зафиксируй симптом и время — скриншот / лог. Только потом чини.
-2. Хочешь покрутить настройки в проде — открой PR с изменением `.env` / settings, апрувь, релизь. Никаких ручных `kubectl set env` без следа в git.
-3. Если кажется, что вытащить пробку прямо сейчас можно только опасным действием — сначала эскалация: позвонить дежурному senior'у.
+1. Capture the symptom and timestamp first — screenshot or log line. Then fix.
+2. Want to tweak production settings? Open a PR that changes `.env` / settings, get it reviewed, and roll it out. No ad-hoc `kubectl set env` without a paper trail in git.
+3. If the only fix you can think of right now is a dangerous action — escalate first: page the on-call senior.
 
 ---
 
-## Алерт: `APIHealthDegraded` (`/health/ready` отдаёт 503)
+## Alert: `APIHealthDegraded` (`/health/ready` returns 503)
 
-**Что значит:** API-под не может достучаться до PG или Redis.
+**What it means:** the API pod cannot reach Postgres or Redis.
 
-**Чек-лист:**
-1. Открой сам ответ `/health/ready` — там JSON с `checks.db` / `checks.redis`. Один из них = error.
-2. Если `db` лежит:
-   - Проверь Postgres-инстанс: `kubectl logs -l app=postgres --tail=200` (или RDS console).
-   - Подключись локально: `psql $DATABASE_URL -c 'SELECT 1'`.
-   - Если PG отвечает, но API не подключается — проверь `pg_stat_activity` на исчерпание connections. Дефолт PG = 100. Если занято — увеличить пул на стороне приложения **уменьшить**, не увеличить (см. ниже).
-3. Если `redis` лежит:
+**Checklist:**
+1. Read the `/health/ready` response — it returns JSON with `checks.db` / `checks.redis`. One of them is `error`.
+2. If `db` is down:
+   - Inspect the Postgres instance: `kubectl logs -l app=postgres --tail=200` (or the RDS console).
+   - Connect locally: `psql $DATABASE_URL -c 'SELECT 1'`.
+   - If PG answers but the API can't connect — check `pg_stat_activity` for exhausted connections. PG default is 100. If maxed out, **shrink** the app-side pool, don't grow it (see DEPLOYMENT.md).
+3. If `redis` is down:
    - `redis-cli -u $REDIS_URL ping`.
-   - Проверь `maxmemory` / OOM в логах. Если bucket-ключи переполнили память — увеличить `maxmemory` или сменить `maxmemory-policy` на `allkeys-lru` (см. `docs/DEPLOYMENT.md`).
-4. Если оба ОК, а `/health/ready` всё равно красит — рестарт api-пода (`kubectl rollout restart deploy/api`). Stale connection pool возможен.
+   - Check `maxmemory` / OOM in the logs. If bucket keys overflowed memory, raise `maxmemory` or switch `maxmemory-policy` to `allkeys-lru` (see `docs/DEPLOYMENT.md`).
+4. If both look OK but `/health/ready` is still red — restart the api pod (`kubectl rollout restart deploy/api`). Stale connection pools happen.
 
-**Когда успокоиться:** `/health/ready` стабильно 200 в течение 60 секунд.
-
----
-
-## Алерт: `MessagesPilingUp` (`notify_relay_queue_depth` растёт >5 мин)
-
-**Что значит:** API принимает быстрее, чем воркеры успевают доставлять.
-
-**Чек-лист:**
-1. На какой канал? — посмотри `notify_relay_queue_depth{channel="email"}` vs `{channel="webhook"}`.
-2. **Email канал отстаёт** — почти всегда внешняя проблема:
-   - `kubectl logs -l app=worker-default | grep -i smtp` — ищи `4xx temporary failure`.
-   - Если MTA нас зарейтлимитил — снизить throughput у нас или попросить лимит у провайдера. Backoff в наших ретраях сам разгребёт.
-3. **Webhook канал отстаёт** — обычно ровно один получатель «лёг»:
-   - Группировка по `recipient` через лог: `kubectl logs ... | jq 'select(.message=="webhook_attempt") | .recipient' | sort | uniq -c | sort -rn | head`.
-   - Если один URL дает >50% ошибок — связаться с владельцем сервиса или временно disable их подписку (если будет фича; сейчас — нет, только через DB UPDATE).
-4. Если оба канала — недостаточно воркеров. Scale: `kubectl scale deploy/worker-default --replicas=8`.
-
-**Когда успокоиться:** `queue_depth` стабильно <100, тренд вниз.
+**When to call it green:** `/health/ready` stays 200 for 60 seconds.
 
 ---
 
-## Алерт: `DeadLetterGrowing` (`rate(notify_relay_dlq_size[1h]) > 0`)
+## Alert: `MessagesPilingUp` (`notify_relay_queue_depth` grows for >5 min)
 
-**Что значит:** сообщения регулярно исчерпывают 6 retries и падают в DLQ.
+**What it means:** the API is accepting faster than workers can deliver.
 
-**Чек-лист:**
-1. По какому каналу растёт DLQ? — JOIN с `notify_relay_messages_total{status="dead"}` по channel.
-2. **email** — обычно почтовый домен получателя отбойник (`421 too many connections`, `550 mailbox not found`). Поднять в DB причины:
+**Checklist:**
+1. Which channel? — compare `notify_relay_queue_depth{channel="email"}` vs `{channel="webhook"}`.
+2. **Email channel lagging** — usually external:
+   - `kubectl logs -l app=worker-default | grep -i smtp` — look for `4xx temporary failure`.
+   - If the MTA rate-limited us — reduce our throughput or request a higher quota from the provider. Our backoff will catch up on its own.
+3. **Webhook channel lagging** — usually one recipient went down:
+   - Group by `recipient` from logs: `kubectl logs ... | jq 'select(.message=="webhook_attempt") | .recipient' | sort | uniq -c | sort -rn | head`.
+   - If one URL accounts for >50% of errors — reach out to the service owner or temporarily disable their subscription (if that feature exists; today it's a manual DB UPDATE).
+4. If both channels are behind — not enough workers. Scale: `kubectl scale deploy/worker-default --replicas=8`.
+
+**When to call it green:** `queue_depth` stable below 100, trending down.
+
+---
+
+## Alert: `DeadLetterGrowing` (`rate(notify_relay_dlq_size[1h]) > 0`)
+
+**What it means:** messages routinely exhaust 6 retries and fall into the DLQ.
+
+**Checklist:**
+1. Which channel is growing the DLQ? — JOIN against `notify_relay_messages_total{status="dead"}` by channel.
+2. **email** — usually the recipient's mail domain is bouncing (`421 too many connections`, `550 mailbox not found`). Pull the reasons from the DB:
    ```sql
    SELECT m.recipient, dl.reason, count(*)
    FROM messages m JOIN dead_letter dl ON dl.message_id = m.id
    WHERE dl.created_at > now() - interval '1 hour'
    GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 20;
    ```
-3. **webhook** — endpoint получателя лежит. Связь с владельцем.
-4. Технически разрезать DLQ можно: восстановить статус и переенкьюить:
+3. **webhook** — the recipient endpoint is down. Contact the owner.
+4. To unstick the DLQ manually: restore the status and re-enqueue:
    ```sql
    UPDATE messages SET status='queued', updated_at=now()
    WHERE id IN (SELECT message_id FROM dead_letter WHERE created_at > now() - interval '10 minutes');
    ```
-   и запустить `dispatch_scheduled` вручную (`celery -A notify_relay call tasks.scheduler.dispatch_scheduled`).
+   then trigger `dispatch_scheduled` by hand (`celery -A notify_relay call tasks.scheduler.dispatch_scheduled`).
 
-**Когда успокоиться:** rate(DLQ) = 0 в течение 15 минут.
-
----
-
-## Алерт: `RateLimitSpike` (массовые 429 на одном API-ключе)
-
-**Что значит:** клиент превысил бакет. Это **не наш** баг, но проверить надо.
-
-**Чек-лист:**
-1. Кто? — найти ключ по `prefix` в логах: `kubectl logs -l app=api | grep '"status":429' | jq '.api_key_prefix' | sort | uniq -c`.
-2. Связаться с владельцем сервиса. Возможные причины: миграция с другой системы (burst), цикл retry на их стороне (баг).
-3. Если правомерный кейс — поднять им лимит через админку (`/admin/core/apikey/`).
+**When to call it green:** `rate(DLQ) = 0` for 15 minutes.
 
 ---
 
-## Алерт: `OpenWebhookConnections` (>50 одновременных POST'ов в worker'е)
+## Alert: `RateLimitSpike` (mass 429s on one API key)
 
-**Что значит:** медленный webhook-получатель держит соединения. Если их сотни — таймауты `requests` могут не срабатывать (рассогласование между requests timeout и системным TCP keepalive).
+**What it means:** the client overran its bucket. **Not our** bug, but worth checking.
 
-**Чек-лист:**
+**Checklist:**
+1. Who? — find the key by `prefix` in logs: `kubectl logs -l app=api | grep '"status":429' | jq '.api_key_prefix' | sort | uniq -c`.
+2. Contact the service owner. Likely causes: migration from another system (burst), retry loop on their side (bug).
+3. If it's a legitimate case — raise their limit via the admin (`/admin/core/apikey/`).
+
+---
+
+## Alert: `OpenWebhookConnections` (>50 concurrent POSTs in a worker)
+
+**What it means:** a slow webhook recipient is holding connections open. If there are hundreds, `requests`-style timeouts may not fire (mismatch between request timeout and OS TCP keepalive).
+
+**Checklist:**
 1. `kubectl exec worker-default -- ss -tn | grep ESTAB | wc -l`.
-2. Если конкретный IP — выяснить, наш ли это получатель (по DNS).
-3. Тяжёлый случай — рестартнуть воркер. Сообщения переедут на retry.
+2. If a single IP dominates — figure out whether it's one of our recipients (DNS).
+3. Worst case — restart the worker. Messages will move to retry.
 
 ---
 
-## «Что делать, если…»
+## "What if…"
 
-| Симптом | Первое подозрение |
+| Symptom | First suspect |
 |---|---|
-| `502/503` от nginx | API-под в crashloop — `kubectl describe pod` |
-| Все email `transient_error` | SMTP сервер лежит или auth не проходит |
-| Все webhook `permanent_error` 422 | `WEBHOOK_BLOCKED_NETWORKS` слишком жёсткий, или DNS подсунул приватный IP |
-| Beat не дёргает задачи | Не один beat работает, а два (race) или ни одного |
-| `OpenAPI` пуст | drf-spectacular не видит viewset'ы — посмотреть `manage.py spectacular --file /tmp/s.yml 2>&1` |
-| `/metrics` пуст | prometheus_client не инициализирован — проверить что middleware/metrics imported |
-| Тесты падают локально, в CI зелёные | Скорее всего разные версии зависимостей — `pip install -e .[dev] --force-reinstall` |
+| `502/503` from nginx | API pod in a crash loop — `kubectl describe pod` |
+| All email is `transient_error` | SMTP server is down or auth is failing |
+| All webhooks are `permanent_error` 422 | `WEBHOOK_BLOCKED_NETWORKS` too strict, or DNS resolved to a private IP |
+| Beat doesn't fire tasks | Either two beats running (race) or zero |
+| `OpenAPI` is empty | drf-spectacular can't see the viewsets — try `manage.py spectacular --file /tmp/s.yml 2>&1` |
+| `/metrics` empty | `prometheus_client` not initialized — check that the metrics middleware is imported |
+| Tests fail locally but pass in CI | Most likely dependency-version skew — `pip install -e .[dev] --force-reinstall` |
 
 ---
 
-## Эскалация
+## Escalation
 
-| Кто | Когда |
+| Who | When |
 |---|---|
-| On-call backend lead | Невозможность доставить более 30 минут, любой инцидент security |
-| Inframind / DevOps | Проблемы с PG / Redis инфраструктурой |
-| Product | Решения о disable'е канала / получателя без их ведома |
+| On-call backend lead | Inability to deliver for >30 minutes, any security incident |
+| Inframind / DevOps | PG / Redis infrastructure issues |
+| Product | Decisions to disable a channel / recipient without their knowledge |

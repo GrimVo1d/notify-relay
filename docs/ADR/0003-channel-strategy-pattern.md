@@ -1,15 +1,15 @@
-# ADR-0003: Каналы доставки — Strategy pattern с единым `ChannelResult`
+# ADR-0003: Delivery channels — Strategy pattern with a single `ChannelResult`
 
 **Status:** Accepted
 **Date:** 2026-02-28
 
-## Контекст
+## Context
 
-У нас два канала: email (SMTP) и webhook (outbound HTTP). У обоих своё API, свои коды ошибок, своя семантика «временная vs постоянная» проблема. Логика retry в Celery должна быть одинаковой независимо от канала.
+We have two channels: email (SMTP) and webhook (outbound HTTP). Each has its own API, its own error codes, and its own "transient vs permanent" semantics. The retry logic in Celery must look the same regardless of which channel is used.
 
-## Решение
+## Decision
 
-Каждый канал реализует протокол `Channel` (`apps/channels/base.py`):
+Each channel implements the `Channel` protocol (`apps/channels/base.py`):
 
 ```python
 class Channel(Protocol):
@@ -24,28 +24,27 @@ class ChannelResult:
     smtp_code: int | None = None
 ```
 
-Канал — единственное место, где знают про SMTP-коды или HTTP-статусы. Дальше по системе ходит только `ChannelResult`. Логика retry в `_dispatch()`:
+A channel is the only place that knows about SMTP codes or HTTP statuses. Past that boundary the system only sees `ChannelResult`. Retry logic in `_dispatch()`:
 
-- `success=True` → `status=SENT`, всё.
-- `success=False, transient=True` → `raise TransientError` → Celery autoretry с exponential backoff.
-- `success=False, transient=False` → сразу в `dead_letter`, без retries.
+- `success=True` → `status=SENT`, done.
+- `success=False, transient=True` → `raise TransientError` → Celery autoretry with exponential backoff.
+- `success=False, transient=False` → straight to `dead_letter`, no retries.
 
-## Последствия
+## Consequences
 
-**+** Добавить новый канал = написать класс на ~50 строк + зарегистрировать в `enqueue_for()`. Логика retry / DLQ / metrics не меняется.
-**+** Контракт `transient/permanent` явный — нельзя забыть. SMTP 4xx → transient, 5xx → permanent. HTTP 5xx, 408, 425, 429 → transient, остальные 4xx → permanent. Это документировано в коде канала, а не размазано по таскам.
-**+** Unit-тесты каналов — это просто моки `send()`. Не нужно дёргать смены статусов в БД.
-**−** Каналы не могут возвращать «частичный успех» (например, 1 из 3 получателей доставлен). У нас этого и не нужно — каждое сообщение = один получатель.
-**−** Дополнительный слой абстракции (`ChannelResult`) — для одного канала был бы overkill, для двух уже окупается.
+**+** Adding a new channel = ~50 lines for a class + registration in `enqueue_for()`. Retry / DLQ / metrics logic stays untouched.
+**+** The `transient/permanent` contract is explicit — you can't forget it. SMTP 4xx → transient, 5xx → permanent. HTTP 5xx, 408, 425, 429 → transient, other 4xx → permanent. That's documented in the channel code, not scattered through the task layer.
+**+** Channel unit tests are simple `send()` mocks. No need to flip DB statuses by hand.
+**−** Channels can't return "partial success" (e.g. 1 of 3 recipients delivered). We don't need that — every message has exactly one recipient.
+**−** An extra abstraction layer (`ChannelResult`) would be overkill for one channel. With two, it pays for itself.
 
-## Альтернативы
+## Alternatives
 
-1. **Прямой вызов SMTP/HTTP из таска, без абстракции.** OK для прототипа. На втором канале начинается копирование retry-логики и расходящаяся семантика ошибок. Через год — рефакторинг ровно к Strategy pattern. Поэтому делаем сразу.
-2. **Inheritance вместо Protocol** (`class EmailChannel(BaseChannel)`). Жёстче, но при таком простом интерфейсе structural typing достаточно и даёт лёгкие моки в тестах (`@dataclass` хватает).
-3. **Plugin system через entry-points.** Полезно если каналы — это внешние пакеты. Нам это не нужно, оба канала живут в монорепе.
+1. **Call SMTP/HTTP directly from the task, no abstraction.** Fine for a prototype. As soon as you add the second channel you copy retry logic and grow divergent error semantics. A year later you refactor it into exactly this Strategy pattern. So we do it up front.
+2. **Inheritance instead of Protocol** (`class EmailChannel(BaseChannel)`). Stricter, but structural typing is enough for an interface this small and gives nicer mocks in tests (a `@dataclass` is plenty).
+3. **Plugin system via entry-points.** Useful when channels live in external packages. We don't need that — both channels are in the monorepo.
 
-## Связано
+## Related
 
-- [SPEC §FR-6, §7](../SPEC.md)
-- Код: [`src/apps/channels/`](../../src/apps/channels/)
-- Использование: [`src/tasks/delivery.py::_dispatch`](../../src/tasks/delivery.py)
+- Code: [`src/apps/channels/`](../../src/apps/channels/)
+- Usage: [`src/tasks/delivery.py::_dispatch`](../../src/tasks/delivery.py)

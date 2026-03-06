@@ -1,37 +1,36 @@
-# ADR-0002: Rate-limit — Redis token-bucket через atomic Lua
+# ADR-0002: Rate-limit — Redis token bucket via atomic Lua
 
 **Status:** Accepted
 **Date:** 2026-02-28
 
-## Контекст
+## Context
 
-Нужно ограничить частоту запросов на API-ключ: 100 req/min default + burst 200, индивидуально переопределяемо. Несколько инстансов API за балансировщиком — состояние должно быть общим. Решения два: алгоритм (fixed window / sliding window / token bucket / leaky bucket) и место хранения (in-memory с gossip / Redis / БД).
+We need to limit request rate per API key: 100 req/min default + burst 200, individually overridable. Several API instances sit behind a load balancer, so the state has to be shared. Two decisions: the algorithm (fixed window / sliding window / token bucket / leaky bucket) and the storage (in-memory with gossip / Redis / DB).
 
-## Решение
+## Decision
 
-**Алгоритм:** token bucket. **Хранение:** Redis. **Атомарность:** один Lua-скрипт `token_bucket.lua`, который читает счётчик, рефиллит на основе прошедшего времени, проверяет и списывает токены — всё одной операцией на стороне Redis.
+**Algorithm:** token bucket. **Storage:** Redis. **Atomicity:** a single Lua script `token_bucket.lua` that reads the counter, refills based on elapsed time, checks and decrements tokens — all in one Redis-side operation.
 
-Ключ: `rl:<sha256(api_key_full)[:16]>` для аутентифицированных запросов, `rl:ip:<remote_addr>` для анонимных (например, на `/api/v1/auth/token/`, хотя сейчас эти эндпоинты исключены из лимита — у них своя защита).
+Key format: `rl:<sha256(api_key_full)[:16]>` for authenticated requests, `rl:ip:<remote_addr>` for anonymous ones (for example on `/api/v1/auth/token/`, although those endpoints are currently excluded from the limit and have their own protection).
 
-## Последствия
+## Consequences
 
-**+** Burst-friendly: short spikes допустимы, sustained — нет. Это то, что хотят клиенты-сервисы (нет «равномерного RPS», есть batch-волны).
-**+** Атомарность Lua → нет TOCTOU между read и decrement. На > 1000 RPS не оверсубскрайбится.
-**+** State выживает рестарты воркеров и переезд подов. EXPIRE на ключе чистит мусор.
-**−** Lua-скрипт нужно тестировать отдельно (см. `tests/unit/test_token_bucket.py` через `fakeredis[lua]`).
-**−** Redis — обязательная зависимость на критическом пути API. При недоступности Redis — middleware либо fail-open (риск перегрузки), либо fail-closed (риск ложных 429). В коде: fail-open + лог, потому что rate-limit — не security-control, а защита downstream'а.
+**+** Burst-friendly: short spikes are allowed, sustained ones are not. That matches what service-to-service clients want (not "even RPS" but batch waves).
+**+** Lua atomicity means no TOCTOU between read and decrement. Stays correct at > 1000 RPS without oversubscription.
+**+** State survives worker restarts and pod reschedules. `EXPIRE` on the key cleans up garbage.
+**−** The Lua script must be tested separately (see `tests/unit/test_token_bucket.py` via `fakeredis[lua]`).
+**−** Redis becomes a hard dependency on the API's critical path. When Redis is down, the middleware can either fail-open (risk of overload) or fail-closed (risk of false 429s). The code fails open and logs, because the rate limiter is downstream-protection, not a security control.
 
-## Альтернативы
+## Alternatives
 
-1. **Sliding window log.** Точнее, но хранит timestamps всех событий в окне — O(N) памяти и трафика. На burst в 200 это перебор.
-2. **Fixed window counter.** Самый простой, но даёт «удвоенный пик» на границе окон (199 в последнюю секунду минуты + 199 в первую секунду следующей).
-3. **Leaky bucket.** Эквивалентен token-bucket по эффекту, но менее интуитивный в конфигурации (rate + capacity vs rate + burst — то же самое разным языком).
-4. **DRF Throttle (per-view).** Хранит в Django cache. Работает на single-node; для multi-node — нужно `django-redis-cache`. Не атомарно — race condition между чтением и инкрементом. Сами throttle-классы DRF — учебные, не production-grade.
-5. **`django-ratelimit` + Redis.** Снаружи похож на наш, внутри — те же race conditions без Lua.
-6. **In-memory + gossip.** Слишком сложно для одного сервиса, оверкилл.
+1. **Sliding window log.** More precise, but stores timestamps for every event in the window — O(N) memory and traffic. For a burst of 200 that's overkill.
+2. **Fixed window counter.** Simplest, but yields a "doubled peak" at window boundaries (199 in the last second of a minute + 199 in the first second of the next).
+3. **Leaky bucket.** Equivalent in effect to token bucket, but less intuitive to configure (rate + capacity vs rate + burst — the same thing in different terms).
+4. **DRF Throttle (per-view).** Stored in the Django cache. Works on a single node; multi-node needs `django-redis-cache`. Not atomic — there's a race between read and increment. The DRF throttle classes themselves are illustrative, not production-grade.
+5. **`django-ratelimit` + Redis.** Looks similar from the outside; the same race conditions without Lua inside.
+6. **In-memory + gossip.** Too complex for one service, overkill.
 
-## Связано
+## Related
 
-- [SPEC §FR-6](../SPEC.md)
-- Исходник Lua: [`src/apps/ratelimit/lua/token_bucket.lua`](../../src/apps/ratelimit/lua/token_bucket.lua)
-- Тесты с fakeredis[lua]: [`tests/integration/test_e2e.py::test_rate_limit_returns_429_with_retry_after`](../../tests/integration/test_e2e.py)
+- Lua source: [`src/apps/ratelimit/lua/token_bucket.lua`](../../src/apps/ratelimit/lua/token_bucket.lua)
+- Tests with fakeredis[lua]: [`tests/integration/test_e2e.py::test_rate_limit_returns_429_with_retry_after`](../../tests/integration/test_e2e.py)
