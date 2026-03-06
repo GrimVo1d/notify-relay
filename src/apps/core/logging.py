@@ -1,51 +1,72 @@
-"""JSON logging with per-request correlation id.
+"""Structured logging with structlog.
 
-The active request id is stored in a ``ContextVar`` so it survives across
-``await`` boundaries and worker threads; both web requests and Celery tasks
-can set it. The :class:`JsonFormatter` injects it into every log record.
+* All loggers (`logging.getLogger(...)`) AND structlog (`structlog.get_logger(...)`)
+  share the same output pipeline via :class:`structlog.stdlib.ProcessorFormatter`.
+* The active request id is held in a structlog contextvar so it survives
+  ``await`` boundaries and Celery task contexts; both web requests and
+  worker tasks can :func:`set_request_id` / :func:`reset_request_id`.
+* JSON output goes to ``LOG_FORMAT=json`` (prod). Plain console renderer
+  goes to ``LOG_FORMAT=plain`` (dev).
 """
 
 from __future__ import annotations
 
-import logging
-from contextvars import ContextVar
 from typing import Any
 
-try:
-    from pythonjsonlogger.json import JsonFormatter as _BaseJsonFormatter
-except ImportError:  # pragma: no cover — older pythonjsonlogger
-    from pythonjsonlogger.jsonlogger import JsonFormatter as _BaseJsonFormatter
+import structlog
 
-_request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
+_REQUEST_ID_KEY = "request_id"
+
+_PRE_CHAIN = [
+    structlog.contextvars.merge_contextvars,
+    structlog.processors.add_log_level,
+    structlog.processors.TimeStamper(fmt="iso", utc=True),
+]
+
+
+def configure_structlog() -> None:
+    """Bind structlog to stdlib logging. Idempotent — safe to call repeatedly."""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso", utc=True),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+
+class JsonFormatter(structlog.stdlib.ProcessorFormatter):
+    """Plug-in for Django's LOGGING dict — emits one JSON object per record."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("processor", structlog.processors.JSONRenderer())
+        kwargs.setdefault("foreign_pre_chain", _PRE_CHAIN)
+        super().__init__(*args, **kwargs)
+
+
+class PlainFormatter(structlog.stdlib.ProcessorFormatter):
+    """Human-readable console output for local dev."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("processor", structlog.dev.ConsoleRenderer(colors=False))
+        kwargs.setdefault("foreign_pre_chain", _PRE_CHAIN)
+        super().__init__(*args, **kwargs)
 
 
 def get_request_id() -> str | None:
-    return _request_id_var.get()
+    return structlog.contextvars.get_contextvars().get(_REQUEST_ID_KEY)
 
 
-def set_request_id(value: str | None) -> object:
-    """Bind ``value`` as the active request id.
-
-    Returns the token so the caller can ``reset`` it later — important inside
-    middleware so concurrent requests don't bleed ids into each other.
-    """
-    return _request_id_var.set(value)
+def set_request_id(value: str) -> dict[str, Any]:
+    """Bind the request id; returns tokens that should be passed to :func:`reset_request_id`."""
+    return structlog.contextvars.bind_contextvars(**{_REQUEST_ID_KEY: value})
 
 
-def reset_request_id(token: object) -> None:
-    _request_id_var.reset(token)  # type: ignore[arg-type]
-
-
-class JsonFormatter(_BaseJsonFormatter):
-    """JSON formatter that always emits ``request_id`` (``"-"`` if unset)."""
-
-    def add_fields(
-        self,
-        log_record: dict[str, Any],
-        record: logging.LogRecord,
-        message_dict: dict[str, Any],
-    ) -> None:
-        super().add_fields(log_record, record, message_dict)
-        log_record.setdefault("level", record.levelname)
-        log_record.setdefault("logger", record.name)
-        log_record["request_id"] = get_request_id() or "-"
+def reset_request_id(tokens: dict[str, Any]) -> None:
+    structlog.contextvars.reset_contextvars(**tokens)
