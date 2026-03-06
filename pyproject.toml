@@ -63,6 +63,7 @@ extend-exclude = '''
 profile = "black"
 line_length = 100
 known_first_party = ["notify_relay", "apps", "tasks"]
+skip_glob = ["**/migrations/*"]
 
 [tool.ruff]
 line-length = 100

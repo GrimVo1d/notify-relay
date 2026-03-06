@@ -1,5 +1,9 @@
 # notify-relay
 
+[![CI](https://github.com/GrimVo1d/notify-relay/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/GrimVo1d/notify-relay/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#лицензия)
+
 Транзакционный сервис рассылок: принимает запросы через REST API, помещает их в Celery-очередь и доставляет получателям по двум каналам — **email (SMTP)** и **outbound webhook (HTTP POST + HMAC)**. Поддерживает приоритеты, ретраи, идемпотентность, шаблоны сообщений с версионированием и rate-limit на отправителя.
 
 ## Зачем
