@@ -62,8 +62,34 @@ def test_render_error_wraps_template_syntax_errors() -> None:
 
 def test_filter_chain_works() -> None:
     out = render(
-        _v("amount: {{ amount|floatformat:2 }}"),
-        {"amount": 12.345},
+        _v("hello {{ name|upper }}"),
+        {"name": "alice"},
         channel=Channel.EMAIL,
     )
-    assert out.body == "amount: 12.35"
+    assert out.body == "hello ALICE"
+
+
+def test_sandbox_blocks_dunder_attribute_introspection() -> None:
+    # The classic "{{ x.__class__.__mro__[-1].__subclasses__() }}" escape
+    # vector relies on attribute chaining. The Jinja2 sandbox returns
+    # ``Undefined`` for any underscore-prefixed attribute, which renders as
+    # an empty string — no class objects ever leak into the output.
+    out = render(
+        _v("attempt:[{{ ctx.__class__ }}][{{ ctx.__init__ }}]"),
+        {"ctx": object()},
+        channel=Channel.WEBHOOK,
+    )
+    assert out.body == "attempt:[][]"
+
+
+def test_sandbox_rejects_chained_class_escape() -> None:
+    # The classic CPython escape (`().__class__.__mro__[-1].__subclasses__()`)
+    # tries to walk up the class hierarchy to reach arbitrary subclasses
+    # (e.g. find ``os._wrap_close`` and shell out). The Jinja2 sandbox raises
+    # SecurityError on ``tuple.__class__`` access — we wrap it as RenderError.
+    with pytest.raises(RenderError):
+        render(
+            _v("{{ ().__class__.__mro__[-1].__subclasses__() }}"),
+            {},
+            channel=Channel.WEBHOOK,
+        )

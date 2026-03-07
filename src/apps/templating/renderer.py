@@ -1,17 +1,18 @@
-"""Rendering of stored notification templates.
+"""Rendering of stored notification templates with Jinja2.
 
-Wraps :class:`django.template.Template` so we can render a stored
-:class:`apps.templating.models.TemplateVersion` (or any duck-typed object with
-``subject_template`` / ``body_template`` attributes) into a static snapshot
-that gets persisted on the ``messages`` row and shipped to the channel.
+We use :class:`jinja2.sandbox.SandboxedEnvironment` (not the default ``Environment``)
+because template bodies come from user-controlled rows in the DB; a sandboxed
+env blocks access to dunder-attributes (``__class__``, ``__mro__``, ``__globals__``)
+and unsafe operations, so a malicious template can't break out into the host
+runtime.
 
 Autoescape policy:
-    * ``email`` channel templates render with autoescape **on** so user-supplied
-      context values don't get interpreted as HTML.
-    * ``webhook`` channel templates render with autoescape **off** since the
-      body is plain text / JSON-bound; HTML escaping would mangle JSON.
-    * The subject line for email is always rendered with autoescape off
-      (headers are not HTML).
+    * ``email`` channel → autoescape **on** (treat body as HTML; user-supplied
+      context can't be interpreted as markup).
+    * ``webhook`` channel → autoescape **off** (body is plain text or JSON;
+      escaping would mangle JSON encoding).
+    * Email subject lines are always rendered with autoescape off — they're
+      headers, not HTML.
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from django.template import Context, Template
-from django.template.exceptions import TemplateSyntaxError
+from jinja2 import ChainableUndefined, TemplateError
+from jinja2.sandbox import SandboxedEnvironment
 
 from .models import Channel
 
@@ -37,7 +38,19 @@ class RenderedMessage:
 
 
 class RenderError(Exception):
-    """Raised when a template fails to render. Wraps the original cause."""
+    """Raised when a template fails to parse or render. Wraps the original cause."""
+
+
+_env_escaped = SandboxedEnvironment(
+    autoescape=True,
+    undefined=ChainableUndefined,
+    keep_trailing_newline=True,
+)
+_env_raw = SandboxedEnvironment(
+    autoescape=False,
+    undefined=ChainableUndefined,
+    keep_trailing_newline=True,
+)
 
 
 def render(
@@ -51,18 +64,14 @@ def render(
     The returned ``RenderedMessage`` is the persisted snapshot — the channel
     adapter must not re-render this content downstream.
     """
-    autoescape_body = channel == Channel.EMAIL
+    body_env = _env_escaped if channel == Channel.EMAIL else _env_raw
+
     try:
-        body = _render_string(template_version.body_template, context, autoescape=autoescape_body)
+        body = body_env.from_string(template_version.body_template).render(context)
         subject = ""
         if template_version.subject_template:
-            subject = _render_string(template_version.subject_template, context, autoescape=False)
-    except (TemplateSyntaxError, Exception) as exc:  # noqa: BLE001
+            subject = _env_raw.from_string(template_version.subject_template).render(context)
+    except TemplateError as exc:
         raise RenderError(str(exc)) from exc
+
     return RenderedMessage(subject=subject, body=body)
-
-
-def _render_string(src: str, context: dict[str, Any], *, autoescape: bool) -> str:
-    tmpl = Template(src)
-    ctx = Context(context, autoescape=autoescape)
-    return tmpl.render(ctx)
