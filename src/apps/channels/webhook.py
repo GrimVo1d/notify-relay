@@ -12,7 +12,7 @@ import json
 import logging
 from collections.abc import Callable
 
-import requests
+import httpx
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -56,16 +56,16 @@ class WebhookChannel:
         timeout = float(getattr(settings, "WEBHOOK_TIMEOUT_S", 10))
 
         try:
-            response = requests.post(
+            response = httpx.post(
                 message.recipient,
-                data=body,
+                content=body,
                 headers=headers,
                 timeout=timeout,
-                allow_redirects=False,
+                follow_redirects=False,
             )
-        except requests.Timeout as exc:
+        except httpx.TimeoutException as exc:
             return ChannelResult(success=False, transient=True, error_message=f"timeout: {exc}")
-        except requests.RequestException as exc:
+        except httpx.RequestError as exc:
             return ChannelResult(success=False, transient=True, error_message=str(exc))
 
         status_code = response.status_code
