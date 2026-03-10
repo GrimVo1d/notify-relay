@@ -13,8 +13,14 @@ RUN apt-get update \
 
 WORKDIR /build
 COPY pyproject.toml README.md ./
+# Wheel only the runtime dependencies — the project's own wheel is built
+# fresh in the runtime stage where src/ is available. This keeps the
+# heavy dependency layer cacheable across code changes.
 RUN python -m pip install --upgrade pip wheel \
- && python -m pip wheel --wheel-dir /wheels .
+ && python -c "import tomllib; \
+deps = tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']; \
+open('/tmp/runtime-requirements.txt','w').write('\n'.join(deps))" \
+ && python -m pip wheel --wheel-dir /wheels -r /tmp/runtime-requirements.txt
 
 
 FROM python:${PYTHON_VERSION}-slim AS runtime
@@ -38,8 +44,10 @@ COPY --from=builder /wheels /wheels
 RUN python -m pip install --no-cache-dir /wheels/*.whl \
  && rm -rf /wheels
 
+COPY --chown=app:app pyproject.toml README.md ./
 COPY --chown=app:app src ./src
 COPY --chown=app:app manage.py ./manage.py
+RUN python -m pip install --no-cache-dir --no-deps -e .
 COPY --chown=app:app docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
