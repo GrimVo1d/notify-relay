@@ -21,7 +21,6 @@ dependencies = [
     "structlog>=24.1",
     "Jinja2>=3.1",
     "prometheus-client>=0.20",
-    "passlib[argon2]>=1.7",
     "python-ulid>=2.7",
 ]
 
@@ -95,7 +94,5 @@ testpaths = ["tests"]
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:celery",
-    "ignore::DeprecationWarning:passlib",
-    "ignore:'crypt' is deprecated:DeprecationWarning",
     "ignore:.*pkg_resources.*:DeprecationWarning",
 ]

@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.request import Request
@@ -16,7 +17,7 @@ from .serializers import (
 )
 
 
-class TemplateViewSet(viewsets.GenericViewSet):
+class TemplateViewSet(viewsets.GenericViewSet[Template]):
     """Templates and their versions.
 
     POST   /api/v1/templates/                        — create template or
@@ -50,9 +51,12 @@ class TemplateViewSet(viewsets.GenericViewSet):
         data = ser.validated_data
 
         with transaction.atomic():
-            tmpl = (
-                Template.objects.alive().filter(name=data["name"], channel=data["channel"]).first()
-            )
+            tmpl = Template.objects.alive().select_for_update().filter(name=data["name"]).first()
+            if tmpl is not None and tmpl.channel != data["channel"]:
+                return Response(
+                    {"detail": f"template '{tmpl.name}' already exists for channel {tmpl.channel}"},
+                    status=status.HTTP_409_CONFLICT,
+                )
             if tmpl is None:
                 tmpl = Template.objects.create(
                     name=data["name"], channel=data["channel"], is_active=True
@@ -80,12 +84,17 @@ class TemplateViewSet(viewsets.GenericViewSet):
         tmpl.save(update_fields=["deleted_at"])
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+    @extend_schema(
+        operation_id="templates_versions_list",
+        responses=TemplateVersionSerializer(many=True),
+    )
     @action(detail=True, methods=["get"], url_path="versions")
     def versions(self, request: Request, name: str | None = None) -> Response:
         tmpl = get_object_or_404(self.queryset, name=name)
         qs = tmpl.versions.order_by("-version")
         return Response([TemplateVersionSerializer(v).data for v in qs])
 
+    @extend_schema(operation_id="templates_version_retrieve", responses=TemplateVersionSerializer)
     @action(
         detail=True,
         methods=["get"],

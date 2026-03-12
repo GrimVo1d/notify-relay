@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from typing import Any
+
 from rest_framework import serializers
 
 from .models import Channel, Template, TemplateVersion
 
 
-class TemplateVersionSerializer(serializers.ModelSerializer):
+class TemplateVersionSerializer(serializers.ModelSerializer[TemplateVersion]):
     class Meta:
         model = TemplateVersion
         fields = [
@@ -18,7 +20,7 @@ class TemplateVersionSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "version", "created_at"]
 
 
-class TemplateReadSerializer(serializers.ModelSerializer):
+class TemplateReadSerializer(serializers.ModelSerializer[Template]):
     latest_version = serializers.SerializerMethodField()
 
     class Meta:
@@ -33,14 +35,14 @@ class TemplateReadSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
-    def get_latest_version(self, obj: Template) -> dict | None:
+    def get_latest_version(self, obj: Template) -> dict[str, Any] | None:
         v = obj.latest_version()
         if v is None:
             return None
         return TemplateVersionSerializer(v).data
 
 
-class TemplateUpsertSerializer(serializers.Serializer):
+class TemplateUpsertSerializer(serializers.Serializer[Any]):
     """Input schema for POST /templates/.
 
     If a template with the given ``(name, channel)`` exists, a new
@@ -50,5 +52,7 @@ class TemplateUpsertSerializer(serializers.Serializer):
 
     name = serializers.CharField(max_length=128)
     channel = serializers.ChoiceField(choices=Channel.choices)
-    subject_template = serializers.CharField(required=False, allow_blank=True, default="")
-    body_template = serializers.CharField()
+    subject_template = serializers.CharField(
+        required=False, allow_blank=True, default="", max_length=998
+    )
+    body_template = serializers.CharField(max_length=64 * 1024)

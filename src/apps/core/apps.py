@@ -7,6 +7,7 @@ class CoreConfig(AppConfig):
     label = "core"
 
     def ready(self) -> None:
+        from . import schema  # noqa: F401  (registers the OpenAPI auth extension)
         from .logging import configure_structlog
 
         configure_structlog()

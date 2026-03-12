@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from jinja2 import ChainableUndefined, TemplateError
+from jinja2 import ChainableUndefined
 from jinja2.sandbox import SandboxedEnvironment
 
 from .models import Channel
@@ -35,6 +35,9 @@ class _Renderable(Protocol):
 class RenderedMessage:
     subject: str
     body: str
+
+
+MAX_RENDERED_CHARS = 256 * 1024
 
 
 class RenderError(Exception):
@@ -71,7 +74,11 @@ def render(
         subject = ""
         if template_version.subject_template:
             subject = _env_raw.from_string(template_version.subject_template).render(context)
-    except TemplateError as exc:
-        raise RenderError(str(exc)) from exc
+    except Exception as exc:
+        # Syntax errors, sandbox violations, and also plain Python errors raised
+        # by expressions over user data (TypeError, OverflowError, ...).
+        raise RenderError(f"{type(exc).__name__}: {exc}") from exc
 
+    if len(body) + len(subject) > MAX_RENDERED_CHARS:
+        raise RenderError(f"rendered message exceeds {MAX_RENDERED_CHARS} characters")
     return RenderedMessage(subject=subject, body=body)

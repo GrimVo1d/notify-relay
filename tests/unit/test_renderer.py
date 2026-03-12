@@ -93,3 +93,13 @@ def test_sandbox_rejects_chained_class_escape() -> None:
             {},
             channel=Channel.WEBHOOK,
         )
+
+
+def test_render_error_wraps_runtime_errors_from_expressions() -> None:
+    with pytest.raises(RenderError, match="TypeError"):
+        render(_v("{{ a + b }}"), {"a": 1, "b": "x"}, channel=Channel.EMAIL)
+
+
+def test_render_error_on_oversized_output() -> None:
+    with pytest.raises(RenderError, match="exceeds"):
+        render(_v("{{ 'x' * n }}"), {"n": 10**6}, channel=Channel.WEBHOOK)

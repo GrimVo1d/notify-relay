@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Any
+
+from django.db.models import QuerySet
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated
@@ -26,7 +29,7 @@ def _error(code: str, message: str, http_status: int) -> Response:
     return Response({"code": code, "detail": message}, status=http_status)
 
 
-class MessageViewSet(viewsets.GenericViewSet):
+class MessageViewSet(viewsets.GenericViewSet[Message]):
     """API for transactional messages.
 
     POST /api/v1/messages/             — enqueue a message (202)
@@ -40,7 +43,7 @@ class MessageViewSet(viewsets.GenericViewSet):
         "api_key", "template_version", "template_version__template"
     )
 
-    def get_queryset(self):  # type: ignore[override]
+    def get_queryset(self) -> QuerySet[Message]:
         qs = super().get_queryset()
         auth = getattr(self.request, "auth", None)
         if isinstance(auth, ApiKey):
@@ -50,7 +53,16 @@ class MessageViewSet(viewsets.GenericViewSet):
             return qs
         return qs.none()
 
-    def create(self, request: Request, *args, **kwargs) -> Response:
+    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        # Only service API keys send messages: idempotency is scoped per key.
+        api_key = request.auth
+        if not isinstance(api_key, ApiKey):
+            return _error(
+                "api_key_required",
+                "messages can only be created with an X-API-Key",
+                status.HTTP_403_FORBIDDEN,
+            )
+
         idempotency_key = (request.META.get(IDEMPOTENCY_HEADER_META) or "").strip()
         if not idempotency_key:
             return _error(
@@ -65,8 +77,6 @@ class MessageViewSet(viewsets.GenericViewSet):
                 {"code": "validation_error", "errors": ser.errors},
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
-
-        api_key = request.auth if isinstance(request.auth, ApiKey) else None
 
         try:
             msg, _created = create_message(
@@ -87,6 +97,6 @@ class MessageViewSet(viewsets.GenericViewSet):
 
         return Response(MessageReadSerializer(msg).data, status=status.HTTP_202_ACCEPTED)
 
-    def retrieve(self, request: Request, *args, **kwargs) -> Response:
+    def retrieve(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         msg = get_object_or_404(self.get_queryset(), pk=kwargs["pk"])
         return Response(MessageReadSerializer(msg).data)

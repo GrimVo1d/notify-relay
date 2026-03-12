@@ -10,7 +10,7 @@ from .models import Message, MessageStatus, Priority
 from .validators import validate_recipient
 
 
-class MessageCreateSerializer(serializers.Serializer):
+class MessageCreateSerializer(serializers.Serializer[Any]):
     """Input schema for ``POST /api/v1/messages``.
 
     The viewset is responsible for resolving ``template`` (a name) to a
@@ -22,7 +22,9 @@ class MessageCreateSerializer(serializers.Serializer):
     recipient = serializers.CharField(max_length=2048)
     template = serializers.CharField(required=False, allow_blank=False)
     template_version = serializers.IntegerField(required=False, allow_null=True, min_value=1)
-    context = serializers.JSONField(required=False, default=dict)
+    # DRF's metaclass moves declared fields off the class, so this doesn't
+    # shadow Serializer.context at runtime; the stubs can't tell.
+    context = serializers.JSONField(required=False, default=dict)  # type: ignore[assignment]
     priority = serializers.ChoiceField(choices=Priority.choices, default=Priority.DEFAULT)
     scheduled_at = serializers.DateTimeField(required=False, allow_null=True)
 
@@ -39,7 +41,7 @@ class MessageCreateSerializer(serializers.Serializer):
         return attrs
 
 
-class MessageReadSerializer(serializers.ModelSerializer):
+class MessageReadSerializer(serializers.ModelSerializer[Message]):
     template_name = serializers.SerializerMethodField()
     template_version = serializers.IntegerField(source="template_version.version", read_only=True)
     status = serializers.ChoiceField(choices=MessageStatus.choices, read_only=True)

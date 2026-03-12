@@ -1,21 +1,24 @@
 """Webhook channel adapter.
 
-Posts a signed JSON envelope to the recipient URL. Re-validates the URL at
-send time (defense in depth against SSRF — values that passed validation
-at API time may resolve differently now). Maps HTTP responses to transient
+Posts a signed JSON envelope to the recipient URL. The URL is re-validated
+at send time and the connection goes to the address that validation
+approved (the original host name is kept in ``Host`` and TLS SNI), so a
+second DNS answer can't point the request somewhere internal. Proxy
+environment variables are ignored. HTTP responses are mapped to transient
 or permanent failure for the retry policy.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
-import logging
+import time
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.utils import timezone
 
 from apps.messages_api.models import Message
 from apps.messages_api.validators import validate_webhook_url
@@ -28,8 +31,6 @@ from .security import (
     compute_signature,
 )
 
-logger = logging.getLogger(__name__)
-
 SecretProvider = Callable[[Message], str]
 
 
@@ -39,30 +40,34 @@ class WebhookChannel:
 
     def send(self, message: Message) -> ChannelResult:
         try:
-            validate_webhook_url(message.recipient)
+            addresses = validate_webhook_url(message.recipient)
         except ValidationError as exc:
             return ChannelResult(success=False, transient=False, error_message=str(exc))
 
+        url = httpx.URL(message.recipient)
         body = self._build_body(message)
-        secret = self.secret_provider(message)
-        timestamp = timezone.now().isoformat()
+        timestamp = str(int(time.time()))
         headers = {
+            "Host": url.netloc.decode("ascii"),
             "Content-Type": "application/json",
             "User-Agent": "notify-relay/0.1",
-            HMAC_HEADER_NAME: compute_signature(body, secret),
+            HMAC_HEADER_NAME: compute_signature(body, self.secret_provider(message), timestamp),
             HMAC_TIMESTAMP_HEADER: timestamp,
             MESSAGE_ID_HEADER: str(message.id),
         }
+        extensions: dict[str, Any] = {}
+        if url.scheme == "https" and not _is_ip_literal(url.host):
+            extensions["sni_hostname"] = url.host
         timeout = float(getattr(settings, "WEBHOOK_TIMEOUT_S", 10))
 
         try:
-            response = httpx.post(
-                message.recipient,
-                content=body,
-                headers=headers,
-                timeout=timeout,
-                follow_redirects=False,
-            )
+            with httpx.Client(trust_env=False, follow_redirects=False, timeout=timeout) as client:
+                response = client.post(
+                    url.copy_with(host=addresses[0]),
+                    content=body,
+                    headers=headers,
+                    extensions=extensions,
+                )
         except httpx.TimeoutException as exc:
             return ChannelResult(success=False, transient=True, error_message=f"timeout: {exc}")
         except httpx.RequestError as exc:
@@ -77,7 +82,7 @@ class WebhookChannel:
             success=False,
             transient=transient,
             http_status=status_code,
-            error_message=f"http {status_code}: {response.text[:200]}",
+            error_message=f"http {status_code}",
         )
 
     @staticmethod
@@ -96,4 +101,15 @@ class WebhookChannel:
 
 
 def _default_secret(message: Message) -> str:
+    """The sending API key's own secret, or the global one for staff-created messages."""
+    if message.api_key is not None and message.api_key.webhook_secret:
+        return message.api_key.webhook_secret
     return str(getattr(settings, "WEBHOOK_HMAC_SECRET", ""))
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True

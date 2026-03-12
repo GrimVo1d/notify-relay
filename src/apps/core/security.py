@@ -1,56 +1,62 @@
 """API key generation and hashing.
 
-A key as shown to the user has the shape ``<prefix><secret>``; the prefix is
-stored in plaintext so we can look up candidate rows by prefix without
-scanning, and ``secret`` is verified against ``hashed_secret`` using argon2
-with a server-side pepper from ``settings.API_KEY_HASH_PEPPER``.
+A key as shown to the user is ``nr_<key_id>_<secret>``. ``nr_<key_id>`` is
+stored in plaintext as a unique, indexed lookup id, so authentication touches
+exactly one row. The secret is 192 random bits, so a fast keyed hash is
+enough: we store ``HMAC-SHA256(pepper, secret)`` with the pepper taken from
+``settings.API_KEY_HASH_PEPPER`` and compare in constant time.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import re
 import secrets
 
 from django.conf import settings
-from passlib.hash import argon2
 
-API_KEY_PREFIX_DEFAULT = "nr_live_"
+KEY_PREFIX = "nr_"
+_KEY_ID_NBYTES = 6
 _SECRET_NBYTES = 24
+_KEY_ID_RE = re.compile(rf"^{KEY_PREFIX}[0-9a-f]{{{_KEY_ID_NBYTES * 2}}}$")
 
 
-def generate_api_key(prefix: str = API_KEY_PREFIX_DEFAULT) -> tuple[str, str, str]:
-    """Return ``(prefix, secret, full_key)``. The caller shows ``full_key`` once."""
+def generate_api_key() -> tuple[str, str, str]:
+    """Return ``(key_id, secret, full_key)``. The caller shows ``full_key`` once."""
+    key_id = f"{KEY_PREFIX}{secrets.token_hex(_KEY_ID_NBYTES)}"
     secret = secrets.token_urlsafe(_SECRET_NBYTES)
-    return prefix, secret, f"{prefix}{secret}"
+    return key_id, secret, f"{key_id}_{secret}"
 
 
 def split_full_key(full_key: str) -> tuple[str, str] | None:
-    """Split ``<env>_<tier>_<secret>`` into ``("<env>_<tier>_", "<secret>")``.
+    """Split ``nr_<key_id>_<secret>`` into ``("nr_<key_id>", "<secret>")``.
 
-    Returns ``None`` if the input doesn't carry the canonical 2-underscore prefix.
-    The secret can itself contain underscores (it's base64-url), so we split
-    on the first two separators rather than the last one.
+    Returns ``None`` for anything that doesn't have that shape. The secret is
+    base64-url and may itself contain underscores, so only the first separator
+    after the key id counts.
     """
-    parts = full_key.split("_", 2)
-    if len(parts) != 3 or not all(parts):
+    if not full_key.startswith(KEY_PREFIX):
         return None
-    return f"{parts[0]}_{parts[1]}_", parts[2]
+    key_id, sep, secret = full_key[len(KEY_PREFIX) :].partition("_")
+    key_id = f"{KEY_PREFIX}{key_id}"
+    if not sep or not secret or not _KEY_ID_RE.match(key_id):
+        return None
+    return key_id, secret
 
 
-def _pepper() -> str:
+def _pepper() -> bytes:
     pepper: str = getattr(settings, "API_KEY_HASH_PEPPER", "") or ""
     if not pepper:
         raise RuntimeError("API_KEY_HASH_PEPPER is not configured")
-    return pepper
+    return pepper.encode("utf-8")
 
 
 def hash_secret(secret: str) -> str:
-    """Hash a key secret using argon2 + server pepper."""
-    return argon2.using(rounds=4).hash(secret + _pepper())
+    """Keyed hash of a key secret, hex-encoded."""
+    return hmac.new(_pepper(), secret.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def verify_secret(secret: str, hashed: str) -> bool:
-    """Constant-time verify of ``secret`` against ``hashed``."""
-    try:
-        return argon2.verify(secret + _pepper(), hashed)
-    except ValueError:
-        return False
+    """Constant-time check of ``secret`` against a stored ``hash_secret`` value."""
+    return hmac.compare_digest(hash_secret(secret), hashed)

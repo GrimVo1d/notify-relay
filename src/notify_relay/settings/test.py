@@ -1,7 +1,16 @@
-from .base import *  # noqa: F401, F403
+"""Test profile: in-process stack (SQLite, eager Celery, locmem mail)."""
+
+from .base import *
+from .base import SIMPLE_JWT
 
 DEBUG = False
-SECRET_KEY = "test-insecure-key"  # noqa: S105
+ALLOWED_HOSTS = ["testserver"]
+
+SECRET_KEY = "test-insecure-secret-key"
+JWT_SIGNING_KEY = "test-insecure-jwt-signing-key-0123456789"
+API_KEY_HASH_PEPPER = "test-insecure-pepper"
+WEBHOOK_HMAC_SECRET = "test-insecure-webhook-secret"
+SIMPLE_JWT = {**SIMPLE_JWT, "SIGNING_KEY": JWT_SIGNING_KEY}
 
 DATABASES = {
     "default": {

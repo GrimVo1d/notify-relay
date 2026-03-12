@@ -3,20 +3,17 @@
 The decrement is atomic — the Lua script reads, refills, checks and writes
 in one server-side step, so concurrent calls can't oversubscribe the bucket
 even under high contention. The script is loaded lazily and re-loaded on
-``NoScriptError`` (i.e. after a Redis flush/restart).
+``NoScriptError`` (i.e. after a Redis flush/restart). Time comes from Redis
+``TIME`` inside the script, so buckets stay consistent across processes and hosts.
 """
 
 from __future__ import annotations
 
-import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import redis as redis_pkg
-
-logger = logging.getLogger(__name__)
 
 _SCRIPT_PATH = Path(__file__).parent / "lua" / "token_bucket.lua"
 
@@ -53,39 +50,24 @@ class TokenBucket:
             raise ValueError("rate_per_min, burst, tokens must be positive")
 
         rate_per_sec = rate_per_min / 60.0
-        now_ms = int(time.monotonic() * 1000)
         key = f"{self.key_prefix}{identity}"
 
         try:
-            raw = self._eval(key, rate_per_sec, burst, now_ms, tokens)
+            raw = self._eval(key, rate_per_sec, burst, tokens)
         except redis_pkg.exceptions.NoScriptError:
             self._script_sha = self._load_script()
-            raw = self._eval(key, rate_per_sec, burst, now_ms, tokens)
+            raw = self._eval(key, rate_per_sec, burst, tokens)
 
         return _parse(raw)
 
     def _load_script(self) -> str:
-        return self.client.script_load(_SCRIPT_PATH.read_text(encoding="utf-8"))
+        sha: str = self.client.script_load(_SCRIPT_PATH.read_text(encoding="utf-8"))
+        return sha
 
-    def _eval(
-        self,
-        key: str,
-        rate_per_sec: float,
-        burst: int,
-        now_ms: int,
-        tokens: int,
-    ) -> Any:
+    def _eval(self, key: str, rate_per_sec: float, burst: int, tokens: int) -> Any:
         if self._script_sha is None:
             self._script_sha = self._load_script()
-        return self.client.evalsha(
-            self._script_sha,
-            1,
-            key,
-            rate_per_sec,
-            burst,
-            now_ms,
-            tokens,
-        )
+        return self.client.evalsha(self._script_sha, 1, key, rate_per_sec, burst, tokens)
 
 
 def _parse(raw: Any) -> BucketResult:

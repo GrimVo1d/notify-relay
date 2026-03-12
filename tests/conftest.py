@@ -33,15 +33,25 @@ def with_redis(redis_client: fakeredis.FakeRedis) -> Iterator[fakeredis.FakeRedi
 
 @pytest.fixture
 def api_key(transactional_db) -> tuple[ApiKey, str]:
-    prefix, secret, full = generate_api_key()
+    key_id, secret, full = generate_api_key()
     ak = ApiKey.objects.create(
         name="svc-test",
-        prefix=prefix,
+        key_id=key_id,
         hashed_secret=hash_secret(secret),
         rate_limit_per_min=60,
         burst=3,
     )
     return ak, full
+
+
+@pytest.fixture
+def staff_client(transactional_db) -> APIClient:
+    from django.contrib.auth import get_user_model
+
+    user = get_user_model().objects.create_user("ops", password="pw-not-used", is_staff=True)
+    client = APIClient()
+    client.force_authenticate(user)
+    return client
 
 
 @pytest.fixture

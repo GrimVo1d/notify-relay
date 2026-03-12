@@ -8,16 +8,17 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import environ
+from celery.schedules import crontab
+from kombu import Queue
 
 BASE_DIR = Path(__file__).resolve().parents[3]
-SRC_DIR = BASE_DIR / "src"
 
 env = environ.Env(
     DEBUG=(bool, False),
-    SECRET_KEY=(str, "dev-insecure-change-me"),
-    ALLOWED_HOSTS=(list, ["*"]),
+    ALLOWED_HOSTS=(list, []),
     DATABASE_URL=(str, f"sqlite:///{BASE_DIR / 'db.sqlite3'}"),
     REDIS_URL=(str, "redis://localhost:6379/0"),
     CELERY_BROKER_URL=(str, "redis://localhost:6379/1"),
@@ -30,29 +31,21 @@ env = environ.Env(
     SMTP_USER=(str, ""),
     SMTP_PASSWORD=(str, ""),
     SMTP_TLS=(bool, False),
-    API_KEY_HASH_PEPPER=(str, "dev-insecure-pepper"),
-    JWT_SIGNING_KEY=(str, "dev-insecure-jwt"),
     WEBHOOK_TIMEOUT_S=(int, 10),
-    WEBHOOK_HMAC_SECRET=(str, "dev-insecure-webhook-secret"),
-    WEBHOOK_BLOCKED_NETWORKS=(
-        list,
-        [
-            "127.0.0.0/8",
-            "10.0.0.0/8",
-            "172.16.0.0/12",
-            "192.168.0.0/16",
-            "169.254.0.0/16",
-            "::1/128",
-            "fc00::/7",
-        ],
-    ),
+    WEBHOOK_BLOCKED_NETWORKS=(list, []),
 )
 
 env_file = BASE_DIR / ".env"
 if env_file.exists():
     environ.Env.read_env(str(env_file))
 
-SECRET_KEY = env("SECRET_KEY")
+# Secrets have no defaults here: dev.py fills in throwaway values, prod.py
+# refuses to start without real ones.
+SECRET_KEY = env.str("SECRET_KEY", default="")
+JWT_SIGNING_KEY = env.str("JWT_SIGNING_KEY", default="")
+API_KEY_HASH_PEPPER = env.str("API_KEY_HASH_PEPPER", default="")
+WEBHOOK_HMAC_SECRET = env.str("WEBHOOK_HMAC_SECRET", default="")
+
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
 
@@ -143,7 +136,7 @@ REST_FRAMEWORK = {
 
 SIMPLE_JWT = {
     "ALGORITHM": "HS256",
-    "SIGNING_KEY": env("JWT_SIGNING_KEY"),
+    "SIGNING_KEY": JWT_SIGNING_KEY,
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "AUTH_HEADER_TYPES": ("Bearer",),
@@ -185,8 +178,6 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TASK_TIME_LIMIT = 60
 CELERY_TASK_SOFT_TIME_LIMIT = 50
 
-from kombu import Queue  # noqa: E402
-
 CELERY_TASK_QUEUES = (
     Queue("high"),
     Queue("default"),
@@ -202,8 +193,6 @@ CELERY_TASK_ROUTES = {
     "tasks.scheduler.cleanup_old_messages": {"queue": "low"},
     "tasks.scheduler.refresh_metrics": {"queue": "low"},
 }
-
-from celery.schedules import crontab  # noqa: E402
 
 CELERY_BEAT_SCHEDULE = {
     "dispatch-scheduled": {
@@ -227,21 +216,22 @@ EMAIL_HOST_PASSWORD = env("SMTP_PASSWORD")
 EMAIL_USE_TLS = env("SMTP_TLS")
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
 
-API_KEY_HASH_PEPPER = env("API_KEY_HASH_PEPPER")
-JWT_SIGNING_KEY = env("JWT_SIGNING_KEY")
 WEBHOOK_TIMEOUT_S = env("WEBHOOK_TIMEOUT_S")
+# Extra CIDRs to refuse on top of the built-in rule (only globally routable
+# addresses are allowed as webhook targets).
 WEBHOOK_BLOCKED_NETWORKS = env("WEBHOOK_BLOCKED_NETWORKS")
-WEBHOOK_HMAC_SECRET = env("WEBHOOK_HMAC_SECRET")
 
 RATE_LIMIT_ENABLED = env.bool("RATE_LIMIT_ENABLED", default=True)
 RATE_LIMIT_DEFAULT_PER_MIN = env.int("RATE_LIMIT_DEFAULT_PER_MIN", default=100)
 RATE_LIMIT_DEFAULT_BURST = env.int("RATE_LIMIT_DEFAULT_BURST", default=200)
+RATE_LIMIT_AUTH_PER_MIN = env.int("RATE_LIMIT_AUTH_PER_MIN", default=10)
+RATE_LIMIT_AUTH_BURST = env.int("RATE_LIMIT_AUTH_BURST", default=10)
 RATE_LIMIT_REDIS_CLIENT_FACTORY: object | None = None
 
 LOG_LEVEL = env("LOG_LEVEL")
 LOG_FORMAT = env("LOG_FORMAT")
 
-LOGGING = {
+LOGGING: dict[str, Any] = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {

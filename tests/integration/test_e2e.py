@@ -7,6 +7,7 @@ network calls are out of scope here.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -102,10 +103,8 @@ def test_webhook_retry_then_success(api_key, webhook_template) -> None:
 
         fake_task = MagicMock()
         fake_task.request.retries = 0
-        try:
+        with contextlib.suppress(TransientError):
             _dispatch(fake_task, str(msg.id), WebhookChannel())
-        except TransientError:
-            pass
 
         fake_task.request.retries = 1
         assert _dispatch(fake_task, str(msg.id), WebhookChannel()) == "sent"
@@ -176,8 +175,8 @@ def test_message_get_is_scoped_to_owner_api_key(api, api_key, email_template) ->
     from apps.core.models import ApiKey
     from apps.core.security import generate_api_key, hash_secret
 
-    p2, s2, full2 = generate_api_key()
-    ApiKey.objects.create(name="other", prefix=p2, hashed_secret=hash_secret(s2))
+    key_id2, s2, full2 = generate_api_key()
+    ApiKey.objects.create(name="other", key_id=key_id2, hashed_secret=hash_secret(s2))
     other = APIClient()
     other.credentials(HTTP_X_API_KEY=full2)
     assert other.get(f"/api/v1/messages/{mid}/").status_code == 404
@@ -225,7 +224,12 @@ def test_template_version_pinning(api, email_template) -> None:
     _idem(api, "vp-2")
     api.post(
         "/api/v1/messages/",
-        {**EMAIL_PAYLOAD, "context": {"name": "Z"}, "recipient": "u@example.internal", "template_version": 1},
+        {
+            **EMAIL_PAYLOAD,
+            "context": {"name": "Z"},
+            "recipient": "u@example.internal",
+            "template_version": 1,
+        },
         format="json",
     )
     assert mail.outbox[-1].body == "Hello Z"

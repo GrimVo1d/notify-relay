@@ -10,8 +10,10 @@ class ApiKeyQuerySet(models.QuerySet["ApiKey"]):
 
 class ApiKey(models.Model):
     name = models.CharField(max_length=128)
-    prefix = models.CharField(max_length=32, db_index=True)
+    key_id = models.CharField(max_length=32, unique=True)
     hashed_secret = models.CharField(max_length=255)
+    # Per-key secret for signing outgoing webhooks of this key's messages.
+    webhook_secret = models.CharField(max_length=64, blank=True, default="")
     rate_limit_per_min = models.PositiveIntegerField(default=100)
     burst = models.PositiveIntegerField(default=200)
     is_active = models.BooleanField(default=True)
@@ -28,7 +30,7 @@ class ApiKey(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.name} ({self.prefix})"
+        return f"{self.name} ({self.key_id})"
 
     @property
     def is_revoked(self) -> bool:

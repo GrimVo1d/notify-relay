@@ -1,4 +1,4 @@
-"""DRF authentication backend that accepts ``X-API-Key: <prefix><secret>``.
+"""DRF authentication backend that accepts ``X-API-Key: nr_<key_id>_<secret>``.
 
 On success ``request.user`` becomes an :class:`ApiKeyPrincipal` (a stand-in
 that DRF's permission checks accept) and ``request.auth`` is the matching
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from django.http import HttpRequest
 from rest_framework import authentication, exceptions
 
 from .models import ApiKey
@@ -19,6 +20,27 @@ if TYPE_CHECKING:
 
 API_KEY_HEADER_META = "HTTP_X_API_KEY"
 API_KEY_HEADER_NAME = "X-API-Key"
+_RESOLVED_ATTR = "_notify_api_key"
+
+
+def resolve_api_key(request: HttpRequest) -> ApiKey | None:
+    """Return the active key matching the request's ``X-API-Key`` header, or ``None``.
+
+    The result is memoised on the request, so the rate-limit middleware and
+    DRF authentication share one lookup.
+    """
+    if hasattr(request, _RESOLVED_ATTR):
+        cached: ApiKey | None = getattr(request, _RESOLVED_ATTR)
+        return cached
+    api_key: ApiKey | None = None
+    parsed = split_full_key(request.META.get(API_KEY_HEADER_META, ""))
+    if parsed is not None:
+        key_id, secret = parsed
+        candidate = ApiKey.objects.active().filter(key_id=key_id).first()
+        if candidate is not None and verify_secret(secret, candidate.hashed_secret):
+            api_key = candidate
+    setattr(request, _RESOLVED_ATTR, api_key)
+    return api_key
 
 
 class ApiKeyPrincipal:
@@ -49,21 +71,12 @@ class ApiKeyPrincipal:
 
 class ApiKeyAuthentication(authentication.BaseAuthentication):
     def authenticate(self, request: Request) -> tuple[ApiKeyPrincipal, ApiKey] | None:
-        raw = request.META.get(API_KEY_HEADER_META)
-        if not raw:
+        if not request.META.get(API_KEY_HEADER_META):
             return None
-
-        parsed = split_full_key(raw)
-        if parsed is None:
-            raise exceptions.AuthenticationFailed("malformed api key")
-        prefix, secret = parsed
-
-        candidates = list(ApiKey.objects.active().filter(prefix=prefix))
-        for ak in candidates:
-            if verify_secret(secret, ak.hashed_secret):
-                return ApiKeyPrincipal(ak), ak
-
-        raise exceptions.AuthenticationFailed("invalid api key")
+        api_key = resolve_api_key(request._request)
+        if api_key is None:
+            raise exceptions.AuthenticationFailed("invalid api key")
+        return ApiKeyPrincipal(api_key), api_key
 
     def authenticate_header(self, request: Request) -> str:
         return API_KEY_HEADER_NAME

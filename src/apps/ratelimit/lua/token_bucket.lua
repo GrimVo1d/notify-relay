@@ -3,14 +3,16 @@
 -- KEYS[1]  -- hash key holding {tokens, last_refill_ms}
 -- ARGV[1]  -- rate (tokens per second, float)
 -- ARGV[2]  -- burst (max tokens, integer)
--- ARGV[3]  -- now (ms, integer)
--- ARGV[4]  -- requested tokens (integer)
+-- ARGV[3]  -- requested tokens (integer)
+--
+-- The clock is Redis's own TIME, so every app process and host shares it.
 --
 -- Returns: {allowed (0|1), tokens_remaining (string), retry_after_ms (integer)}
 local rate     = tonumber(ARGV[1])
 local burst    = tonumber(ARGV[2])
-local now_ms   = tonumber(ARGV[3])
-local req      = tonumber(ARGV[4])
+local req      = tonumber(ARGV[3])
+local t        = redis.call('TIME')
+local now_ms   = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 
 local data = redis.call('HMGET', KEYS[1], 'tokens', 'last_refill')
 local tokens = tonumber(data[1])
