@@ -1,21 +1,30 @@
-"""Prometheus metrics surface.
+"""Prometheus metrics.
 
-Counters and histograms are mutated from the hot paths (delivery tasks, API
-views via middleware would also fit here later). Gauges that describe
-table-shaped state (queue depth, DLQ size) are computed periodically by the
-Beat-driven :func:`tasks.scheduler.refresh_metrics`.
+Two sources, because deliveries and the API live in different processes:
+
+* Delivery counters and the duration histogram are updated by Celery workers.
+  Each worker container serves them itself (see ``notify_relay.celery``),
+  aggregated across its prefork children through ``PROMETHEUS_MULTIPROC_DIR``.
+* Table-shaped state (queue depth, dead-letter size) is read from the
+  database when the API's ``/metrics`` endpoint is scraped, so it is always
+  current and doesn't depend on which process last touched it.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+from django.db.models import Count
 from django.http import HttpRequest, HttpResponse
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
+    CollectorRegistry,
     Counter,
-    Gauge,
     Histogram,
     generate_latest,
 )
+from prometheus_client.core import GaugeMetricFamily
+from prometheus_client.registry import Collector
 
 messages_total = Counter(
     "notify_relay_messages_total",
@@ -36,43 +45,37 @@ delivery_duration = Histogram(
     buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
 )
 
-queue_depth = Gauge(
-    "notify_relay_queue_depth",
-    "Messages in queued status per channel (refreshed by Beat)",
-    ["channel"],
-)
 
-dlq_size = Gauge(
-    "notify_relay_dlq_size",
-    "Dead-letter rows count (refreshed by Beat)",
-)
+class DatabaseStateCollector(Collector):
+    """Gauges computed from the database at scrape time."""
+
+    def collect(self) -> Iterator[GaugeMetricFamily]:
+        from apps.messages_api.models import DeadLetter, Message, MessageStatus
+
+        queue_depth = GaugeMetricFamily(
+            "notify_relay_queue_depth",
+            "Messages in queued status per channel",
+            labels=["channel"],
+        )
+        rows = (
+            Message.objects.filter(status=MessageStatus.QUEUED)
+            .values("channel")
+            .annotate(n=Count("id"))
+        )
+        for row in rows:
+            queue_depth.add_metric([row["channel"]], row["n"])
+        yield queue_depth
+
+        yield GaugeMetricFamily(
+            "notify_relay_dlq_size",
+            "Dead-letter rows count",
+            value=DeadLetter.objects.count(),
+        )
+
+
+api_registry = CollectorRegistry(auto_describe=False)
+api_registry.register(DatabaseStateCollector())
 
 
 def metrics(_request: HttpRequest) -> HttpResponse:
-    return HttpResponse(generate_latest(), content_type=CONTENT_TYPE_LATEST)
-
-
-def refresh_gauges_from_db() -> None:
-    """Populate gauges from the database.
-
-    Called from the Beat task — kept here so the metric definitions and the
-    refresher live next to each other.
-    """
-    from apps.messages_api.models import DeadLetter  # noqa: PLC0415
-
-    for channel, n in _count_queued_per_channel().items():
-        queue_depth.labels(channel=channel).set(n)
-    dlq_size.set(DeadLetter.objects.count())
-
-
-def _count_queued_per_channel() -> dict[str, int]:
-    from django.db.models import Count  # noqa: PLC0415
-
-    from apps.messages_api.models import Message, MessageStatus  # noqa: PLC0415
-
-    rows = (
-        Message.objects.filter(status=MessageStatus.QUEUED)
-        .values("channel")
-        .annotate(n=Count("id"))
-    )
-    return {r["channel"]: r["n"] for r in rows}
+    return HttpResponse(generate_latest(api_registry), content_type=CONTENT_TYPE_LATEST)

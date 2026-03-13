@@ -66,6 +66,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "apps.core.health.HealthProbeMiddleware",
     "apps.core.middleware.RequestIDMiddleware",
     "apps.core.middleware.RateLimitMiddleware",
     "django.middleware.security.SecurityMiddleware",
@@ -191,7 +192,6 @@ CELERY_TASK_ROUTES = {
     "tasks.delivery.send_webhook": {"queue": "default"},
     "tasks.scheduler.dispatch_scheduled": {"queue": "default"},
     "tasks.scheduler.cleanup_old_messages": {"queue": "low"},
-    "tasks.scheduler.refresh_metrics": {"queue": "low"},
 }
 
 CELERY_BEAT_SCHEDULE = {
@@ -203,10 +203,6 @@ CELERY_BEAT_SCHEDULE = {
         "task": "tasks.scheduler.cleanup_old_messages",
         "schedule": crontab(hour="3", minute="0"),
     },
-    "refresh-metrics": {
-        "task": "tasks.scheduler.refresh_metrics",
-        "schedule": 30.0,
-    },
 }
 
 EMAIL_HOST = env("SMTP_HOST")
@@ -215,6 +211,8 @@ EMAIL_HOST_USER = env("SMTP_USER")
 EMAIL_HOST_PASSWORD = env("SMTP_PASSWORD")
 EMAIL_USE_TLS = env("SMTP_TLS")
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
+
+REDIS_URL = env("REDIS_URL")
 
 WEBHOOK_TIMEOUT_S = env("WEBHOOK_TIMEOUT_S")
 # Extra CIDRs to refuse on top of the built-in rule (only globally routable

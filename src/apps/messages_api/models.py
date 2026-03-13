@@ -58,6 +58,10 @@ class Message(models.Model):
         max_length=16, choices=MessageStatus.choices, default=MessageStatus.QUEUED
     )
     scheduled_at = models.DateTimeField(null=True, blank=True)
+    # When a delivery task was last handed to the broker; NULL means "not yet"
+    # (a future scheduled_at). The scheduler uses it to release due messages
+    # and to re-enqueue ones the broker lost.
+    enqueued_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

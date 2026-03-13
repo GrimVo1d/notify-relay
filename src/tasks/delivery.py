@@ -54,7 +54,7 @@ class TransientError(Exception):
     retry_jitter=True,
     max_retries=MAX_RETRIES,
 )
-def send_email(self: Task, message_id: str) -> str:
+def send_email(self: Task[Any, Any], message_id: str) -> str:
     return _dispatch(self, message_id, EmailChannel())
 
 
@@ -67,14 +67,14 @@ def send_email(self: Task, message_id: str) -> str:
     retry_jitter=True,
     max_retries=MAX_RETRIES,
 )
-def send_webhook(self: Task, message_id: str) -> str:
+def send_webhook(self: Task[Any, Any], message_id: str) -> str:
     return _dispatch(self, message_id, WebhookChannel())
 
 
-def _dispatch(task: Task, message_id: str, channel: Channel) -> str:
+def _dispatch(task: Task[Any, Any], message_id: str, channel: Channel) -> str:
     with transaction.atomic():
         msg = Message.objects.select_for_update().get(pk=message_id)
-        if msg.status in {MessageStatus.SENT, MessageStatus.DEAD}:
+        if msg.status in {MessageStatus.SENT, MessageStatus.FAILED, MessageStatus.DEAD}:
             return "noop"
         msg.status = MessageStatus.SENDING
         msg.save(update_fields=["status", "updated_at"])
@@ -83,7 +83,7 @@ def _dispatch(task: Task, message_id: str, channel: Channel) -> str:
     with delivery_duration.labels(channel=msg.channel).time():
         try:
             result = channel.send(msg)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("channel raised unexpectedly")
             result = ChannelResult(success=False, transient=True, error_message=repr(exc))
     finished = timezone.now()
@@ -157,4 +157,4 @@ def _map_result(result: ChannelResult) -> str:
 def enqueue_for(message: Message) -> None:
     """Schedule a message for delivery on the priority-matching queue."""
     task = send_email if message.channel == ChannelEnum.EMAIL else send_webhook
-    task.apply_async(args=[str(message.id)], queue=message.priority)
+    task.apply_async(args=(str(message.id),), queue=message.priority)

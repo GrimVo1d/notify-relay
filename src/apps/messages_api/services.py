@@ -7,18 +7,17 @@ rules and is the place to unit-test them without spinning up DRF.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from django.db import transaction
+from django.utils import timezone
 
 from apps.core.models import ApiKey
 from apps.templating.models import Template, TemplateVersion
 from apps.templating.renderer import render
+from tasks.delivery import enqueue_for
 
 from .models import Message, MessageStatus, Priority
-
-logger = logging.getLogger(__name__)
 
 
 class IdempotencyConflict(Exception):
@@ -39,7 +38,8 @@ def create_message(
 
     ``created=False`` means the row already existed for this key, and the new
     request's payload matches the stored one. ``created=True`` means a new row
-    was inserted and a dispatch task scheduled on commit.
+    was inserted; it is enqueued on commit unless ``scheduled_at`` is in the
+    future, in which case the Beat scheduler releases it when due.
     """
     existing = (
         Message.objects.filter(api_key=api_key, idempotency_key=idempotency_key)
@@ -58,6 +58,10 @@ def create_message(
         channel=validated_data["channel"],
     )
 
+    now = timezone.now()
+    scheduled_at = validated_data.get("scheduled_at")
+    send_now = scheduled_at is None or scheduled_at <= now
+
     with transaction.atomic():
         msg = Message.objects.create(
             idempotency_key=idempotency_key,
@@ -69,10 +73,12 @@ def create_message(
             rendered_body=rendered.body,
             context=validated_data.get("context") or {},
             priority=validated_data.get("priority", Priority.DEFAULT),
-            scheduled_at=validated_data.get("scheduled_at"),
+            scheduled_at=scheduled_at,
+            enqueued_at=now if send_now else None,
             status=MessageStatus.QUEUED,
         )
-        transaction.on_commit(lambda mid=msg.id: enqueue(mid))
+        if send_now:
+            transaction.on_commit(lambda: enqueue_for(msg))
     return msg, True
 
 
@@ -80,12 +86,9 @@ def _resolve_template(data: dict[str, Any]) -> TemplateVersion:
     name = data.get("template")
     if not name:
         raise TemplateNotFound("template name is required")
-    try:
-        tmpl = Template.objects.alive().get(name=name, channel=data["channel"])
-    except Template.DoesNotExist as exc:
-        raise TemplateNotFound(
-            f"template '{name}' not found for channel '{data['channel']}'"
-        ) from exc
+    tmpl = Template.objects.alive().filter(name=name).first()
+    if tmpl is None or tmpl.channel != data["channel"]:
+        raise TemplateNotFound(f"template '{name}' not found for channel '{data['channel']}'")
 
     requested_version = data.get("template_version")
     if requested_version:
@@ -112,14 +115,4 @@ def _payload_matches(existing: Message, new: dict[str, Any]) -> bool:
     if new.get("scheduled_at") != existing.scheduled_at:
         return False
     new_priority = new.get("priority") or Priority.DEFAULT
-    if existing.priority != new_priority:
-        return False
-    return True
-
-
-def enqueue(message_id: str) -> None:
-    """Schedule a message for delivery via the matching Celery task."""
-    from tasks.delivery import enqueue_for  # noqa: PLC0415 — break import cycle
-
-    msg = Message.objects.select_related().get(pk=message_id)
-    enqueue_for(msg)
+    return existing.priority == new_priority

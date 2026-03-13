@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import json
 import socket
+from datetime import timedelta
 
 import httpx
 import pytest
 import respx
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.channels.security import verify_signature
 from apps.channels.webhook import WebhookChannel
-from apps.messages_api.models import Message
+from apps.messages_api.models import Message, MessageStatus
+from tasks.scheduler import dispatch_scheduled
 
 MISSING_MESSAGE_URL = "/api/v1/messages/01J00000000000000000000000/"
 
@@ -101,6 +104,117 @@ def test_login_endpoint_has_its_own_strict_bucket(with_redis, transactional_db) 
         for _ in range(3)
     ]
     assert codes == [401, 401, 429]
+
+
+@override_settings(RATE_LIMIT_ENABLED=True, RATE_LIMIT_DEFAULT_BURST=1)
+def test_probes_and_metrics_are_not_rate_limited(with_redis, transactional_db) -> None:
+    client = APIClient()
+    assert [client.get("/health/live").status_code for _ in range(3)] == [200, 200, 200]
+    assert [client.get("/metrics").status_code for _ in range(3)] == [200, 200, 200]
+
+
+# --- probes and metrics ----------------------------------------------------
+
+
+def test_liveness_ignores_host_header(client) -> None:  # type: ignore[no-untyped-def]
+    r = client.get("/health/live", HTTP_HOST="10.1.2.3:8000")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+def test_readiness_ok(client, with_redis, transactional_db) -> None:  # type: ignore[no-untyped-def]
+    r = client.get("/health/ready", HTTP_HOST="10.1.2.3:8000")
+    assert r.status_code == 200
+    assert r.json()["checks"] == {"db": "ok", "redis": "ok"}
+
+
+def test_readiness_failure_does_not_leak_details(client, transactional_db) -> None:  # type: ignore[no-untyped-def]
+    def broken() -> object:
+        raise ConnectionError("redis://user:hunter2@redis.internal:6379")
+
+    with override_settings(RATE_LIMIT_REDIS_CLIENT_FACTORY=broken):
+        r = client.get("/health/ready")
+    assert r.status_code == 503
+    assert r.json()["checks"]["redis"] == "error"
+    assert b"hunter2" not in r.content
+
+
+def test_metrics_report_queue_depth_from_db(client, email_template) -> None:  # type: ignore[no-untyped-def]
+    Message.objects.create(
+        idempotency_key="m-1",
+        channel="email",
+        recipient="a@example.internal",
+        template_version=email_template,
+        scheduled_at=timezone.now() + timedelta(hours=1),
+    )
+    text = client.get("/metrics").content.decode()
+    assert 'notify_relay_queue_depth{channel="email"} 1.0' in text
+    assert "notify_relay_dlq_size 0.0" in text
+
+
+# --- scheduling ------------------------------------------------------------
+
+
+def _post(api: APIClient, key: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
+    return api.post("/api/v1/messages/", payload, format="json", HTTP_IDEMPOTENCY_KEY=key)
+
+
+def test_future_scheduled_at_is_not_sent_immediately(api, email_template) -> None:
+    when = (timezone.now() + timedelta(hours=1)).isoformat()
+    r = _post(api, "fut-1", {**EMAIL_PAYLOAD, "scheduled_at": when})
+    assert r.status_code == 202, r.content
+    msg = Message.objects.get(pk=r.json()["id"])
+    assert msg.status == MessageStatus.QUEUED
+    assert msg.enqueued_at is None
+
+    assert dispatch_scheduled() == 0
+    Message.objects.filter(pk=msg.pk).update(scheduled_at=timezone.now() - timedelta(seconds=1))
+    assert dispatch_scheduled() == 1
+    msg.refresh_from_db()
+    assert msg.status == MessageStatus.SENT
+
+
+def test_dispatcher_reenqueues_stranded_but_not_fresh_messages(email_template) -> None:
+    common = {
+        "channel": "email",
+        "recipient": "a@example.internal",
+        "rendered_subject": "S",
+        "rendered_body": "B",
+        "template_version": email_template,
+    }
+    stranded = Message.objects.create(
+        idempotency_key="str-1", enqueued_at=timezone.now() - timedelta(hours=1), **common
+    )
+    fresh = Message.objects.create(idempotency_key="str-2", enqueued_at=timezone.now(), **common)
+    assert dispatch_scheduled() == 1
+    stranded.refresh_from_db()
+    fresh.refresh_from_db()
+    assert stranded.status == MessageStatus.SENT
+    assert fresh.status == MessageStatus.QUEUED
+
+
+# --- celery wiring ---------------------------------------------------------
+
+
+def test_worker_registers_all_tasks() -> None:
+    from notify_relay.celery import app
+
+    app.loader.import_default_modules()
+    for name in (
+        "tasks.delivery.send_email",
+        "tasks.delivery.send_webhook",
+        "tasks.scheduler.dispatch_scheduled",
+        "tasks.scheduler.cleanup_old_messages",
+    ):
+        assert name in app.tasks
+
+
+def test_beat_schedule_points_at_registered_tasks(settings) -> None:  # type: ignore[no-untyped-def]
+    from notify_relay.celery import app
+
+    app.loader.import_default_modules()
+    for entry in settings.CELERY_BEAT_SCHEDULE.values():
+        assert entry["task"] in app.tasks
 
 
 # --- webhook delivery ------------------------------------------------------
