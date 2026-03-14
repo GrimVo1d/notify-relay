@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from contextvars import Token
 from typing import Any
 
 import structlog
@@ -63,10 +65,10 @@ def get_request_id() -> str | None:
     return structlog.contextvars.get_contextvars().get(_REQUEST_ID_KEY)
 
 
-def set_request_id(value: str) -> dict[str, Any]:
+def set_request_id(value: str) -> Mapping[str, Token[Any]]:
     """Bind the request id; returns tokens that should be passed to :func:`reset_request_id`."""
     return structlog.contextvars.bind_contextvars(**{_REQUEST_ID_KEY: value})
 
 
-def reset_request_id(tokens: dict[str, Any]) -> None:
+def reset_request_id(tokens: Mapping[str, Token[Any]]) -> None:
     structlog.contextvars.reset_contextvars(**tokens)

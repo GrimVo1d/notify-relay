@@ -1,53 +1,45 @@
+# python
 __pycache__/
 *.py[cod]
-*$py.class
 *.so
-.Python
+build/
+dist/
+*.egg-info/
 
-# venv
+# virtualenvs
 .venv/
 venv/
-env/
 
-# tooling
+# tooling caches
 .mypy_cache/
+.dmypy.json
 .ruff_cache/
 .pytest_cache/
+.hypothesis/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
-.tox/
 
-# django
+# django / celery runtime files
 *.log
-local_settings.py
 db.sqlite3
 db.sqlite3-journal
 staticfiles/
 media/
+celerybeat-schedule*
 
 # env / secrets
 .env
 .env.*
 !.env.example
 
-# editor
+# docker
+docker-compose.override.yml
+
+# editors / os
 .idea/
 .vscode/
 *.swp
-*.swo
 *~
-.vim/
-*.code-workspace
-
-# os
 .DS_Store
-Thumbs.db
-desktop.ini
-
-# build
-build/
-dist/
-*.egg-info/
-
-# docker
-docker-compose.override.yml
