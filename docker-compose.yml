@@ -1,20 +1,38 @@
+# Local development stack. Secrets left empty fall back to the throwaway
+# values in settings/dev.py; host ports are bound to 127.0.0.1 only.
+
 x-app-env: &app-env
-  DJANGO_SETTINGS_MODULE: notify_relay.settings.dev
-  SECRET_KEY: ${SECRET_KEY:-dev-insecure-change-me}
+  DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-notify_relay.settings.dev}
   DEBUG: ${DEBUG:-1}
-  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+  SECRET_KEY: ${SECRET_KEY:-}
+  JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-}
+  API_KEY_HASH_PEPPER: ${API_KEY_HASH_PEPPER:-}
+  WEBHOOK_HMAC_SECRET: ${WEBHOOK_HMAC_SECRET:-}
   DATABASE_URL: postgres://nr:nr@db:5432/notify_relay
   REDIS_URL: redis://redis:6379/0
   CELERY_BROKER_URL: redis://redis:6379/1
   CELERY_RESULT_BACKEND: redis://redis:6379/2
-  SMTP_HOST: mailpit
-  SMTP_PORT: "1025"
-  DEFAULT_FROM_EMAIL: no-reply@notify-relay.internal
-  JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-dev-insecure-jwt}
-  API_KEY_HASH_PEPPER: ${API_KEY_HASH_PEPPER:-dev-insecure-pepper}
-  WEBHOOK_TIMEOUT_S: "10"
+  SMTP_HOST: ${SMTP_HOST:-mailpit}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_TLS: ${SMTP_TLS:-0}
+  DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-no-reply@notify-relay.internal}
+  WEBHOOK_TIMEOUT_S: ${WEBHOOK_TIMEOUT_S:-10}
+  WEBHOOK_BLOCKED_NETWORKS: ${WEBHOOK_BLOCKED_NETWORKS:-}
+  RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-1}
+  RATE_LIMIT_DEFAULT_PER_MIN: ${RATE_LIMIT_DEFAULT_PER_MIN:-100}
+  RATE_LIMIT_DEFAULT_BURST: ${RATE_LIMIT_DEFAULT_BURST:-200}
+  RATE_LIMIT_AUTH_PER_MIN: ${RATE_LIMIT_AUTH_PER_MIN:-10}
+  RATE_LIMIT_AUTH_BURST: ${RATE_LIMIT_AUTH_BURST:-10}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   LOG_FORMAT: ${LOG_FORMAT:-json}
+
+x-worker-env: &worker-env
+  <<: *app-env
+  CELERY_METRICS_PORT: "9100"
+  PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
 
 x-app-build: &app-build
   build:
@@ -35,9 +53,13 @@ services:
     environment:
       <<: *app-env
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/live"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"
       interval: 15s
       timeout: 3s
       retries: 5
@@ -47,21 +69,21 @@ services:
     <<: *app-build
     command: ["worker", "high"]
     environment:
-      <<: *app-env
+      <<: *worker-env
       CELERY_CONCURRENCY: "8"
 
   worker-default:
     <<: *app-build
     command: ["worker", "default"]
     environment:
-      <<: *app-env
+      <<: *worker-env
       CELERY_CONCURRENCY: "4"
 
   worker-low:
     <<: *app-build
     command: ["worker", "low"]
     environment:
-      <<: *app-env
+      <<: *worker-env
       CELERY_CONCURRENCY: "2"
 
   beat:
@@ -71,7 +93,7 @@ services:
       <<: *app-env
 
   db:
-    image: postgres:16.2-alpine
+    image: postgres:16.15-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: nr
@@ -80,7 +102,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nr -d notify_relay"]
       interval: 5s
@@ -88,11 +110,11 @@ services:
       retries: 10
 
   redis:
-    image: redis:7.2-alpine
+    image: redis:7.4.11-alpine
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -100,14 +122,14 @@ services:
       retries: 10
 
   mailpit:
-    image: axllent/mailpit:v1.20
+    image: axllent/mailpit:v1.31.6
     restart: unless-stopped
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: "1"
       MP_SMTP_AUTH_ALLOW_INSECURE: "1"
     ports:
-      - "${MAILPIT_SMTP_PORT:-1025}:1025"
-      - "${MAILPIT_HTTP_PORT:-8025}:8025"
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_HTTP_PORT:-8025}:8025"
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8025/"]
       interval: 10s

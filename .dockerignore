@@ -1,0 +1,6 @@
+*
+!requirements.lock
+!manage.py
+!src/
+!docker/entrypoint.sh
+**/__pycache__
