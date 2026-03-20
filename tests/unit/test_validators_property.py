@@ -10,6 +10,7 @@ that handwritten examples often miss.
 from __future__ import annotations
 
 import ipaddress
+import time
 
 import pytest
 from django.core.exceptions import ValidationError
@@ -111,3 +112,50 @@ def test_returns_vetted_addresses_for_hostname(monkeypatch) -> None:  # type: ig
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     assert validate_webhook_url("https://hooks.example.internal/x") == ["1.1.1.1", "8.8.8.8"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[::127.0.0.1]/",  # IPv4-compatible
+        "http://[::ffff:0:a00:1]/",  # SIIT-translated 10.0.0.1
+        "http://[fec0::1]/",  # deprecated site-local
+        "http://1.1.1.1:99999/x",  # port out of range
+        "http://[::1/",  # malformed
+    ],
+)
+def test_rejected_webhook_urls(url: str) -> None:
+    with pytest.raises(ValidationError):
+        validate_webhook_url(url)
+
+
+def test_slow_api_side_lookup_defers_to_the_send_time_check(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import socket
+    import threading
+
+    from apps.messages_api import validators
+
+    release = threading.Event()
+
+    def hanging_getaddrinfo(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        release.wait(5)
+        raise socket.gaierror("gave up")
+
+    monkeypatch.setattr(socket, "getaddrinfo", hanging_getaddrinfo)
+    try:
+        assert validate_webhook_url("https://slow.example.internal/x", resolve_timeout=0.1) == []
+        # Every slot is now held by a hanging lookup: further calls neither
+        # queue nor wait, so one slow domain can't block everybody else.
+        for _ in range(validators._RESOLVER_THREADS):
+            validate_webhook_url("https://slow.example.internal/x", resolve_timeout=0.1)
+        started = time.monotonic()
+        assert validate_webhook_url("https://other.example.internal/x", resolve_timeout=5) == []
+        assert time.monotonic() - started < 1
+    finally:
+        release.set()
+        validators._resolver_pool.submit(lambda: None).result()
+
+
+def test_webhook_url_with_zone_id_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        validate_webhook_url("http://[2606:4700::1111%25eth0]/")

@@ -4,8 +4,9 @@ Posts a signed JSON envelope to the recipient URL. The URL is re-validated
 at send time and the connection goes to the address that validation
 approved (the original host name is kept in ``Host`` and TLS SNI), so a
 second DNS answer can't point the request somewhere internal. Proxy
-environment variables are ignored. HTTP responses are mapped to transient
-or permanent failure for the retry policy.
+environment variables are ignored and the response body is never read.
+HTTP statuses are mapped to transient or permanent failure for the retry
+policy.
 """
 
 from __future__ import annotations
@@ -42,7 +43,9 @@ class WebhookChannel:
         try:
             addresses = validate_webhook_url(message.recipient)
         except ValidationError as exc:
-            return ChannelResult(success=False, transient=False, error_message=str(exc))
+            return ChannelResult(
+                success=False, transient=False, error_message="; ".join(exc.messages)
+            )
 
         url = httpx.URL(message.recipient)
         body = self._build_body(message)
@@ -57,23 +60,29 @@ class WebhookChannel:
         }
         extensions: dict[str, Any] = {}
         if url.scheme == "https" and not _is_ip_literal(url.host):
-            extensions["sni_hostname"] = url.host
+            # The A-label: the name that was resolved and is sent in ``Host``.
+            extensions["sni_hostname"] = url.raw_host.decode("ascii")
         timeout = float(getattr(settings, "WEBHOOK_TIMEOUT_S", 10))
 
         try:
-            with httpx.Client(trust_env=False, follow_redirects=False, timeout=timeout) as client:
-                response = client.post(
+            with (
+                httpx.Client(trust_env=False, follow_redirects=False, timeout=timeout) as client,
+                client.stream(
+                    "POST",
                     url.copy_with(host=addresses[0]),
                     content=body,
                     headers=headers,
                     extensions=extensions,
-                )
+                ) as response,
+            ):
+                # Only the status matters; the body is never read, so a huge or
+                # endless response can't exhaust the worker's memory.
+                status_code = response.status_code
         except httpx.TimeoutException as exc:
             return ChannelResult(success=False, transient=True, error_message=f"timeout: {exc}")
         except httpx.RequestError as exc:
             return ChannelResult(success=False, transient=True, error_message=str(exc))
 
-        status_code = response.status_code
         if 200 <= status_code < 300:
             return ChannelResult(success=True, transient=False, http_status=status_code)
 
