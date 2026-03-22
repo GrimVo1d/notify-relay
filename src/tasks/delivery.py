@@ -1,7 +1,9 @@
 """Channel delivery tasks.
 
 The pattern is:
-    1. mark message ``sending``,
+    1. claim the message: mark it ``sending`` with the task id; a task that
+       finds it already claimed by another task (a duplicate from the
+       stranded-message re-enqueue) stops,
     2. invoke the channel,
     3. record a :class:`DeliveryAttempt`,
     4. on transient failure raise :class:`TransientError` so Celery's
@@ -72,12 +74,17 @@ def send_webhook(self: Task[Any, Any], message_id: str) -> str:
 
 
 def _dispatch(task: Task[Any, Any], message_id: str, channel: Channel) -> str:
+    # Retries and redeliveries after a worker crash keep the task id.
+    owner = str(task.request.id or "")
     with transaction.atomic():
         msg = Message.objects.select_for_update().get(pk=message_id)
         if msg.status in {MessageStatus.SENT, MessageStatus.FAILED, MessageStatus.DEAD}:
             return "noop"
+        if msg.status == MessageStatus.SENDING and msg.claimed_by != owner:
+            return "duplicate"
         msg.status = MessageStatus.SENDING
-        msg.save(update_fields=["status", "updated_at"])
+        msg.claimed_by = owner
+        msg.save(update_fields=["status", "claimed_by", "updated_at"])
 
     started = timezone.now()
     with delivery_duration.labels(channel=msg.channel).time():

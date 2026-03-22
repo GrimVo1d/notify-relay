@@ -115,6 +115,38 @@ def test_webhook_retry_then_success(api_key, webhook_template) -> None:
     assert statuses == ["transient_error", "success"]
 
 
+def test_duplicate_task_backs_off_while_another_one_owns_the_message(
+    api_key, email_template
+) -> None:
+    from unittest.mock import MagicMock
+
+    from tasks.delivery import _dispatch
+
+    ak, _full = api_key
+    msg = Message.objects.create(
+        idempotency_key="dup-1",
+        api_key=ak,
+        channel="email",
+        recipient="x@example.internal",
+        rendered_subject="S",
+        rendered_body="B",
+        template_version=email_template,
+        status=MessageStatus.SENDING,
+        claimed_by="first-task",
+    )
+    duplicate = MagicMock()
+    duplicate.request.id = "second-task"
+    duplicate.request.retries = 0
+    with patch.object(EmailChannel, "send") as send:
+        assert _dispatch(duplicate, str(msg.id), EmailChannel()) == "duplicate"
+    send.assert_not_called()
+
+    owner = MagicMock()
+    owner.request.id = "first-task"
+    owner.request.retries = 1
+    assert _dispatch(owner, str(msg.id), EmailChannel()) == "sent"
+
+
 def test_dead_letter_after_max_retries(api_key, email_template) -> None:
     from unittest.mock import MagicMock
 
@@ -182,6 +214,32 @@ def test_message_get_is_scoped_to_owner_api_key(api, api_key, email_template) ->
     assert other.get(f"/api/v1/messages/{mid}/").status_code == 404
 
 
+def test_concurrent_duplicate_is_answered_as_a_replay(api, email_template, monkeypatch) -> None:
+    from apps.messages_api import services
+
+    _idem(api, "race-1")
+    first = api.post("/api/v1/messages/", EMAIL_PAYLOAD, format="json").json()["id"]
+
+    # Simulate losing the race: the pre-insert lookup misses the row once.
+    real_find = services._find_existing
+    calls = {"n": 0}
+
+    def find_once_missing(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real_find(*args, **kwargs)
+
+    monkeypatch.setattr(services, "_find_existing", find_once_missing)
+    r = api.post("/api/v1/messages/", EMAIL_PAYLOAD, format="json")
+    assert r.status_code == 202
+    assert r.json()["id"] == first
+
+    calls["n"] = 0
+    r = api.post(
+        "/api/v1/messages/", {**EMAIL_PAYLOAD, "recipient": "x@example.internal"}, format="json"
+    )
+    assert r.status_code == 409
+
+
 def test_missing_idempotency_header_is_rejected(api, email_template) -> None:
     r = api.post("/api/v1/messages/", EMAIL_PAYLOAD, format="json")
     assert r.status_code == 400
@@ -202,6 +260,7 @@ def test_email_actually_lands_in_locmem(api, email_template) -> None:
     assert sent.to == ["alice@example.internal"]
     assert sent.subject == "Hi Alice"
     assert sent.body == "Hello Alice"
+    assert sent.content_subtype == "html"
 
 
 def test_template_version_pinning(api, email_template) -> None:

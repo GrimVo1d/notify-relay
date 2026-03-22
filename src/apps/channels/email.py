@@ -1,7 +1,10 @@
 """Email channel adapter.
 
-Uses Django's email backend (configurable via ``EMAIL_*`` settings). The
-backend is in turn driven by ``smtplib``, which surfaces server responses as
+Uses Django's email backend (configurable via ``EMAIL_*`` settings). Bodies
+are sent as ``text/html``: email templates are rendered with HTML
+autoescaping, so the body is HTML by construction.
+
+The backend is driven by ``smtplib``, which surfaces server responses as
 :class:`smtplib.SMTPResponseException`. We map SMTP 4xx → transient
 (worth retrying) and 5xx → permanent (give up).
 """
@@ -26,6 +29,7 @@ class EmailChannel:
             from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
             to=[message.recipient],
         )
+        email.content_subtype = "html"
         try:
             sent = email.send(fail_silently=False)
         except smtplib.SMTPResponseException as exc:

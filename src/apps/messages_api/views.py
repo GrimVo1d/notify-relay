@@ -18,6 +18,7 @@ from .services import IdempotencyConflict, TemplateNotFound, create_message
 
 IDEMPOTENCY_HEADER_META = "HTTP_IDEMPOTENCY_KEY"
 IDEMPOTENCY_HEADER_NAME = "Idempotency-Key"
+IDEMPOTENCY_KEY_MAX_LENGTH = Message._meta.get_field("idempotency_key").max_length or 128
 
 
 def _error(code: str, message: str, http_status: int) -> Response:
@@ -68,6 +69,12 @@ class MessageViewSet(viewsets.GenericViewSet[Message]):
             return _error(
                 "idempotency_key_missing",
                 f"{IDEMPOTENCY_HEADER_NAME} header is required",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        if len(idempotency_key) > IDEMPOTENCY_KEY_MAX_LENGTH:
+            return _error(
+                "idempotency_key_too_long",
+                f"{IDEMPOTENCY_HEADER_NAME} is longer than {IDEMPOTENCY_KEY_MAX_LENGTH} characters",
                 status.HTTP_400_BAD_REQUEST,
             )
 

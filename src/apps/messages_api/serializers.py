@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from apps.templating.models import Channel
@@ -36,8 +37,8 @@ class MessageCreateSerializer(serializers.Serializer[Any]):
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         try:
             validate_recipient(attrs["channel"], attrs["recipient"])
-        except Exception as exc:
-            raise serializers.ValidationError({"recipient": str(exc)}) from exc
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"recipient": exc.messages}) from exc
         return attrs
 
 

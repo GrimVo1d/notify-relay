@@ -62,6 +62,9 @@ class Message(models.Model):
     # (a future scheduled_at). The scheduler uses it to release due messages
     # and to re-enqueue ones the broker lost.
     enqueued_at = models.DateTimeField(null=True, blank=True)
+    # Celery task id that moved the message to ``sending``. Only that task (and
+    # its retries) may continue; duplicate tasks for the same message back off.
+    claimed_by = models.CharField(max_length=64, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

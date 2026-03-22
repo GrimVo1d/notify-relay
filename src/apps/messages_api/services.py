@@ -7,10 +7,12 @@ rules and is the place to unit-test them without spinning up DRF.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
+from kombu.exceptions import OperationalError as BrokerError
 
 from apps.core.models import ApiKey
 from apps.templating.models import Template, TemplateVersion
@@ -18,6 +20,8 @@ from apps.templating.renderer import render
 from tasks.delivery import enqueue_for
 
 from .models import Message, MessageStatus, Priority
+
+logger = logging.getLogger(__name__)
 
 
 class IdempotencyConflict(Exception):
@@ -41,15 +45,9 @@ def create_message(
     was inserted; it is enqueued on commit unless ``scheduled_at`` is in the
     future, in which case the Beat scheduler releases it when due.
     """
-    existing = (
-        Message.objects.filter(api_key=api_key, idempotency_key=idempotency_key)
-        .select_related("template_version__template")
-        .first()
-    )
+    existing = _find_existing(api_key, idempotency_key)
     if existing is not None:
-        if _payload_matches(existing, validated_data):
-            return existing, False
-        raise IdempotencyConflict("Idempotency-Key reused with different payload")
+        return _replay(existing, validated_data), False
 
     template_version = _resolve_template(validated_data)
     rendered = render(
@@ -62,24 +60,57 @@ def create_message(
     scheduled_at = validated_data.get("scheduled_at")
     send_now = scheduled_at is None or scheduled_at <= now
 
-    with transaction.atomic():
-        msg = Message.objects.create(
-            idempotency_key=idempotency_key,
-            api_key=api_key,
-            channel=validated_data["channel"],
-            recipient=validated_data["recipient"],
-            template_version=template_version,
-            rendered_subject=rendered.subject,
-            rendered_body=rendered.body,
-            context=validated_data.get("context") or {},
-            priority=validated_data.get("priority", Priority.DEFAULT),
-            scheduled_at=scheduled_at,
-            enqueued_at=now if send_now else None,
-            status=MessageStatus.QUEUED,
-        )
-        if send_now:
-            transaction.on_commit(lambda: enqueue_for(msg))
+    try:
+        with transaction.atomic():
+            msg = Message.objects.create(
+                idempotency_key=idempotency_key,
+                api_key=api_key,
+                channel=validated_data["channel"],
+                recipient=validated_data["recipient"],
+                template_version=template_version,
+                rendered_subject=rendered.subject,
+                rendered_body=rendered.body,
+                context=validated_data.get("context") or {},
+                priority=validated_data.get("priority", Priority.DEFAULT),
+                scheduled_at=scheduled_at,
+                enqueued_at=now if send_now else None,
+                status=MessageStatus.QUEUED,
+            )
+            if send_now:
+                transaction.on_commit(lambda: _enqueue_after_commit(msg))
+    except IntegrityError:
+        # A concurrent request with the same key won the insert race.
+        existing = _find_existing(api_key, idempotency_key)
+        if existing is None:
+            raise
+        return _replay(existing, validated_data), False
     return msg, True
+
+
+def _enqueue_after_commit(msg: Message) -> None:
+    """Publish the delivery task; if the broker is down, leave it to Beat.
+
+    The row is already committed, so the caller gets its ``202``; Beat's
+    stranded-message pass re-enqueues it once ``enqueued_at`` is old enough.
+    """
+    try:
+        enqueue_for(msg)
+    except BrokerError:
+        logger.warning("broker unavailable, message %s left for re-enqueue", msg.pk, exc_info=True)
+
+
+def _find_existing(api_key: ApiKey | None, idempotency_key: str) -> Message | None:
+    return (
+        Message.objects.filter(api_key=api_key, idempotency_key=idempotency_key)
+        .select_related("template_version__template")
+        .first()
+    )
+
+
+def _replay(existing: Message, validated_data: dict[str, Any]) -> Message:
+    if not _payload_matches(existing, validated_data):
+        raise IdempotencyConflict("Idempotency-Key reused with different payload")
+    return existing
 
 
 def _resolve_template(data: dict[str, Any]) -> TemplateVersion:

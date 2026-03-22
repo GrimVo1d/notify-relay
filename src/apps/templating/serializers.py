@@ -45,9 +45,10 @@ class TemplateReadSerializer(serializers.ModelSerializer[Template]):
 class TemplateUpsertSerializer(serializers.Serializer[Any]):
     """Input schema for POST /templates/.
 
-    If a template with the given ``(name, channel)`` exists, a new
-    :class:`TemplateVersion` is appended (auto-incrementing). Otherwise the
-    template row is created together with version 1.
+    Template names are unique. If ``name`` exists for the same channel, a new
+    :class:`TemplateVersion` is appended (auto-incrementing); if it exists for
+    another channel the view answers 409. Otherwise the template row is
+    created together with version 1.
     """
 
     name = serializers.CharField(max_length=128)
