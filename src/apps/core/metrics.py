@@ -51,6 +51,7 @@ class DatabaseStateCollector(Collector):
 
     def collect(self) -> Iterator[GaugeMetricFamily]:
         from apps.messages_api.models import DeadLetter, Message, MessageStatus
+        from apps.templating.models import Channel
 
         queue_depth = GaugeMetricFamily(
             "notify_relay_queue_depth",
@@ -62,8 +63,10 @@ class DatabaseStateCollector(Collector):
             .values("channel")
             .annotate(n=Count("id"))
         )
-        for row in rows:
-            queue_depth.add_metric([row["channel"]], row["n"])
+        depth = dict.fromkeys(Channel.values, 0)  # empty queues report 0
+        depth.update({row["channel"]: row["n"] for row in rows})
+        for channel, n in depth.items():
+            queue_depth.add_metric([channel], n)
         yield queue_depth
 
         yield GaugeMetricFamily(

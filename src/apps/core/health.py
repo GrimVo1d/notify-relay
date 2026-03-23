@@ -70,17 +70,21 @@ def _check_redis(checks: dict[str, str]) -> bool:
         return False
 
 
+_redis_clients: dict[str, Any] = {}
+
+
 def _make_redis() -> Any:
     factory = getattr(settings, "RATE_LIMIT_REDIS_CLIENT_FACTORY", None)
     if callable(factory):
         return factory()
     import redis
 
-    return redis.from_url(
-        settings.REDIS_URL,
-        socket_connect_timeout=1,
-        socket_timeout=1,
-    )
+    # One pooled client per process: a probe flood must not open a new
+    # connection per request.
+    url = settings.REDIS_URL
+    if url not in _redis_clients:
+        _redis_clients[url] = redis.from_url(url, socket_connect_timeout=1, socket_timeout=1)
+    return _redis_clients[url]
 
 
 _PROBES: dict[str, Callable[[HttpRequest], JsonResponse]] = {

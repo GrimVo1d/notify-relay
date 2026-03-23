@@ -26,6 +26,7 @@ class ApiKeyViewSet(viewsets.GenericViewSet[ApiKey]):
     permission_classes = [permissions.IsAdminUser]
     queryset = ApiKey.objects.all().order_by("-created_at")
     serializer_class = ApiKeyReadSerializer
+    lookup_value_regex = r"\d+"
 
     def list(self, request: Request) -> Response:
         data = [ApiKeyReadSerializer(k).data for k in self.get_queryset()]

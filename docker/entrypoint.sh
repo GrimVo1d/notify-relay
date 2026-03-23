@@ -18,6 +18,7 @@ case "$cmd" in
             --bind 0.0.0.0:8000 \
             --workers "${GUNICORN_WORKERS:-4}" \
             --timeout "${GUNICORN_TIMEOUT:-30}" \
+            --no-control-socket \
             --access-logfile - \
             --error-logfile -
         ;;

@@ -42,7 +42,7 @@ def test_staff_jwt_cannot_create_messages(staff_client, email_template) -> None:
 def test_malformed_api_key_is_401(transactional_db) -> None:
     client = APIClient()
     client.credentials(HTTP_X_API_KEY="nr_0123456789ab_wrong")  # gitleaks:allow
-    assert client.get(MISSING_MESSAGE_URL).status_code in (401, 403)
+    assert client.get(MISSING_MESSAGE_URL).status_code == 401
 
 
 def test_api_key_create_returns_key_and_webhook_secret(staff_client) -> None:
@@ -55,6 +55,40 @@ def test_api_key_create_returns_key_and_webhook_secret(staff_client) -> None:
     client = APIClient()
     client.credentials(HTTP_X_API_KEY=body["key"])
     assert client.get(MISSING_MESSAGE_URL).status_code == 404
+
+
+def test_non_numeric_api_key_id_is_404(staff_client) -> None:
+    assert staff_client.get("/api/v1/api-keys/abc/").status_code == 404
+    assert staff_client.post("/api/v1/api-keys/abc/revoke/").status_code == 404
+
+
+def test_broker_outage_still_answers_202(api, email_template, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from kombu.exceptions import OperationalError
+
+    from apps.messages_api import services
+
+    def broker_down(_message: Message) -> None:
+        raise OperationalError("broker down")
+
+    monkeypatch.setattr(services, "enqueue_for", broker_down)
+    r = api.post("/api/v1/messages/", EMAIL_PAYLOAD, format="json", HTTP_IDEMPOTENCY_KEY="b-1")
+    assert r.status_code == 202, r.content
+    msg = Message.objects.get(pk=r.json()["id"])
+    assert msg.status == MessageStatus.QUEUED
+    assert msg.enqueued_at is not None  # re-enqueued by Beat once stranded
+
+
+def test_invalid_recipient_error_is_a_plain_message(api, email_template) -> None:
+    payload = {**EMAIL_PAYLOAD, "recipient": "not-an-email"}
+    r = api.post("/api/v1/messages/", payload, format="json", HTTP_IDEMPOTENCY_KEY="r-1")
+    assert r.status_code == 422
+    assert r.json()["errors"]["recipient"] == ["Enter a valid email address."]
+
+
+def test_overlong_idempotency_key_is_400(api, email_template) -> None:
+    r = api.post("/api/v1/messages/", EMAIL_PAYLOAD, format="json", HTTP_IDEMPOTENCY_KEY="k" * 129)
+    assert r.status_code == 400
+    assert r.json()["code"] == "idempotency_key_too_long"
 
 
 # --- templates -------------------------------------------------------------
@@ -106,11 +140,91 @@ def test_login_endpoint_has_its_own_strict_bucket(with_redis, transactional_db) 
     assert codes == [401, 401, 429]
 
 
+@override_settings(RATE_LIMIT_ENABLED=True, RATE_LIMIT_AUTH_PER_MIN=60, RATE_LIMIT_AUTH_BURST=1)
+def test_per_ip_buckets_use_forwarded_for_behind_trusted_proxy(
+    with_redis, transactional_db
+) -> None:
+    client = APIClient()
+
+    def login(xff: str) -> int:
+        return client.post(
+            "/api/v1/auth/token/",
+            {"username": "x", "password": "y"},
+            format="json",
+            HTTP_X_FORWARDED_FOR=xff,
+        ).status_code
+
+    with override_settings(NUM_PROXIES=1):
+        assert login("198.51.100.1") == 401
+        assert login("198.51.100.2") == 401  # another client behind the same proxy
+        assert login("203.0.113.9, 198.51.100.1") == 429  # spoofed left entry is ignored
+    with override_settings(NUM_PROXIES=0):
+        assert login("198.51.100.3") == 401  # REMOTE_ADDR bucket, untouched so far
+        assert login("198.51.100.4") == 429
+
+
+@override_settings(RATE_LIMIT_ENABLED=True, RATE_LIMIT_AUTH_PER_MIN=60, RATE_LIMIT_AUTH_BURST=1)
+def test_garbage_forwarded_for_falls_back_to_remote_addr(with_redis, transactional_db) -> None:
+    client = APIClient()
+
+    def login(xff: str) -> int:
+        return client.post(
+            "/api/v1/auth/token/",
+            {"username": "x", "password": "y"},
+            format="json",
+            HTTP_X_FORWARDED_FOR=xff,
+        ).status_code
+
+    with override_settings(NUM_PROXIES=1):
+        assert login("not-an-ip-1") == 401
+        assert login("not-an-ip-2") == 429  # no fresh bucket per made-up value
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("2001:db8:1:2::1", "2001:db8:1:2:ffff::9"),  # same /64
+        ("fe80::1%eth0", "fe80::1%x1"),  # zone ids dropped
+        ("::ffff:198.51.100.7", "198.51.100.7"),  # IPv4-mapped folded
+    ],
+)
+@override_settings(RATE_LIMIT_ENABLED=True, RATE_LIMIT_AUTH_PER_MIN=60, RATE_LIMIT_AUTH_BURST=1)
+def test_addresses_of_one_client_share_a_bucket(
+    with_redis, transactional_db, first, second
+) -> None:  # type: ignore[no-untyped-def]
+    client = APIClient()
+
+    def login(xff: str) -> int:
+        return client.post(
+            "/api/v1/auth/token/",
+            {"username": "x", "password": "y"},
+            format="json",
+            HTTP_X_FORWARDED_FOR=xff,
+        ).status_code
+
+    with override_settings(NUM_PROXIES=1):
+        assert login(first) == 401
+        assert login(second) == 429
+
+
 @override_settings(RATE_LIMIT_ENABLED=True, RATE_LIMIT_DEFAULT_BURST=1)
 def test_probes_and_metrics_are_not_rate_limited(with_redis, transactional_db) -> None:
     client = APIClient()
     assert [client.get("/health/live").status_code for _ in range(3)] == [200, 200, 200]
     assert [client.get("/metrics").status_code for _ in range(3)] == [200, 200, 200]
+
+
+@override_settings(RATE_LIMIT_ENABLED=True)
+def test_rate_limiter_fails_open_when_redis_is_down(api, email_template) -> None:
+    import redis
+
+    class DownRedis:
+        def script_load(self, *_args: object) -> str:
+            raise redis.ConnectionError("down")
+
+    with override_settings(RATE_LIMIT_REDIS_CLIENT_FACTORY=DownRedis):
+        r = api.post("/api/v1/messages/", EMAIL_PAYLOAD, format="json", HTTP_IDEMPOTENCY_KEY="fo-1")
+    assert r.status_code == 202, r.content
 
 
 # --- probes and metrics ----------------------------------------------------
@@ -149,6 +263,7 @@ def test_metrics_report_queue_depth_from_db(client, email_template) -> None:  # 
     )
     text = client.get("/metrics").content.decode()
     assert 'notify_relay_queue_depth{channel="email"} 1.0' in text
+    assert 'notify_relay_queue_depth{channel="webhook"} 0.0' in text
     assert "notify_relay_dlq_size 0.0" in text
 
 
@@ -259,6 +374,35 @@ def test_webhook_connects_to_vetted_ip_and_signs_with_key_secret(
         sent.headers["x-notify-signature"],
     )
     assert json.loads(sent.content)["message_id"] == str(msg.id)
+
+
+def test_webhook_idn_host_uses_one_a_label_everywhere(
+    api_key, webhook_template, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    resolved: list[str] = []
+
+    def fake_getaddrinfo(host, port, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        resolved.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", port or 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    ak, _full = api_key
+    msg = Message.objects.create(
+        idempotency_key="wh-idn",
+        api_key=ak,
+        channel="webhook",
+        recipient="https://faß.example.internal/in",
+        template_version=webhook_template,
+    )
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post("https://1.1.1.1/in").mock(return_value=httpx.Response(204))
+        assert WebhookChannel().send(msg).success
+
+    sent = route.calls.last.request
+    a_label = "xn--fa-hia.example.internal"  # IDNA 2008; IDNA 2003 would say "fass"
+    assert resolved == [a_label]
+    assert sent.headers["host"] == a_label
+    assert sent.extensions["sni_hostname"] == a_label
 
 
 @pytest.mark.parametrize(

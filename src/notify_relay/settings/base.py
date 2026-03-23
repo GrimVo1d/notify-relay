@@ -225,6 +225,9 @@ RATE_LIMIT_DEFAULT_BURST = env.int("RATE_LIMIT_DEFAULT_BURST", default=200)
 RATE_LIMIT_AUTH_PER_MIN = env.int("RATE_LIMIT_AUTH_PER_MIN", default=10)
 RATE_LIMIT_AUTH_BURST = env.int("RATE_LIMIT_AUTH_BURST", default=10)
 RATE_LIMIT_REDIS_CLIENT_FACTORY: object | None = None
+# Number of trusted reverse proxies in front of the API; per-IP rate limits
+# then read the client address from X-Forwarded-For. 0 = use REMOTE_ADDR.
+NUM_PROXIES = env.int("NUM_PROXIES", default=0)
 
 LOG_LEVEL = env("LOG_LEVEL")
 LOG_FORMAT = env("LOG_FORMAT")

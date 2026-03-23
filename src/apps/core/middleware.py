@@ -8,22 +8,29 @@
   ``Retry-After`` when the bucket is empty. A request with a valid API key
   uses that key's bucket and limits; everything else (no key, unknown or
   wrong key) is limited per client IP. Login endpoints get their own, much
-  stricter per-IP bucket.
+  stricter per-IP bucket. If Redis is unreachable the request is let through
+  (fail open) and a warning is logged.
 """
 
 from __future__ import annotations
 
+import ipaddress
+import logging
 from collections.abc import Callable
 from typing import Any
 
+import redis
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.utils.log import log_response
 from ulid import ULID
 
 from apps.ratelimit.bucket import TokenBucket
 
 from .authentication import resolve_api_key
 from .logging import reset_request_id, set_request_id
+
+logger = logging.getLogger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-ID"
 _MAX_ID_LENGTH = 64
@@ -50,6 +57,16 @@ class RequestIDMiddleware:
         token = set_request_id(request_id)
         try:
             response = self.get_response(request)
+            # Django logs 4xx/5xx responses after the middleware chain, when the
+            # request id is gone; log them here so the line carries it.
+            if response.status_code >= 400:
+                log_response(
+                    "%s: %s",
+                    response.reason_phrase,
+                    request.path,
+                    response=response,
+                    request=request,
+                )
         finally:
             reset_request_id(token)
 
@@ -58,6 +75,43 @@ class RequestIDMiddleware:
 
 
 _AUTH_PATHS = ("/api/v1/auth/", "/admin/login/")
+
+
+def _client_ip(request: HttpRequest) -> str:
+    """Client address for per-IP buckets.
+
+    Behind ``NUM_PROXIES`` trusted reverse proxies the client is the entry that
+    many hops from the right of ``X-Forwarded-For``; entries further left are
+    client-supplied and can't be trusted.
+    """
+    hops = int(getattr(settings, "NUM_PROXIES", 0))
+    if hops > 0:
+        forwarded = str(request.META.get("HTTP_X_FORWARDED_FOR", ""))
+        chain = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if len(chain) >= hops:
+            # Garbage would give the sender a fresh bucket per request.
+            bucket = _bucket_address(chain[-hops])
+            if bucket is not None:
+                return bucket
+    remote = str(request.META.get("REMOTE_ADDR") or "")
+    return _bucket_address(remote) or remote or "unknown"
+
+
+def _bucket_address(raw: str) -> str | None:
+    """The bucket key for an address: IPv4 as is, IPv6 by its /64.
+
+    One IPv6 host usually owns a whole /64 and could pick a new source address
+    per request; zone ids are dropped for the same reason.
+    """
+    try:
+        ip = ipaddress.ip_address(raw.split("%", 1)[0])
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.IPv6Network((ip, 64), strict=False))
+    return str(ip)
 
 
 class RateLimitMiddleware:
@@ -76,7 +130,11 @@ class RateLimitMiddleware:
             return self.get_response(request)
         identity, rate, burst = derived
 
-        result = self._get_bucket().consume(identity, rate_per_min=rate, burst=burst)
+        try:
+            result = self._get_bucket().consume(identity, rate_per_min=rate, burst=burst)
+        except redis.RedisError:
+            logger.warning("rate limiter unavailable, letting the request through", exc_info=True)
+            return self.get_response(request)
         if not result.allowed:
             resp = JsonResponse(
                 {"code": "rate_limited", "detail": "rate limit exceeded"},
@@ -93,7 +151,7 @@ class RateLimitMiddleware:
     @staticmethod
     def _derive(request: HttpRequest) -> tuple[str, int, int] | None:
         path = request.path
-        ip = request.META.get("REMOTE_ADDR") or "unknown"
+        ip = _client_ip(request)
         if path.startswith(_AUTH_PATHS):
             return (
                 f"auth-ip:{ip}",
@@ -122,6 +180,4 @@ class RateLimitMiddleware:
         factory = getattr(settings, "RATE_LIMIT_REDIS_CLIENT_FACTORY", None)
         if callable(factory):
             return factory()
-        import redis
-
-        return redis.from_url(settings.REDIS_URL)
+        return redis.from_url(settings.REDIS_URL, socket_connect_timeout=1, socket_timeout=1)
