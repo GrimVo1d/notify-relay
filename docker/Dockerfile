@@ -1,6 +1,7 @@
-ARG PYTHON_VERSION=3.12
+# Pinned by digest so a rebuild gets the same base; bump tag and digest together.
+ARG PYTHON_IMAGE=python:3.12.15-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
-FROM python:${PYTHON_VERSION}-slim AS builder
+FROM ${PYTHON_IMAGE} AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -14,7 +15,7 @@ RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --require-hashes --no-deps -r /tmp/requirements.lock
 
 
-FROM python:${PYTHON_VERSION}-slim AS runtime
+FROM ${PYTHON_IMAGE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
