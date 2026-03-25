@@ -11,7 +11,7 @@ Maintenance comparison: `python-json-logger` has ~600k downloads/day and is main
 
 ## Decision
 
-Switch to `structlog` (see commit `refactor(core): swap python-json-logger for structlog with bound contextvars`). Specifically:
+Switch to `structlog`. Specifically:
 
 1. **Pipeline.** A single `ProcessorFormatter` for stdlib loggers and `structlog.get_logger()` — both go through the same processors (timestamp, level, request_id, exc_info, JSON-render).
 2. **Context.** `structlog.contextvars.bind_contextvars(request_id=..., user_id=...)` instead of hand-rolled ContextVars. Any field is bound in one line, lands in EVERY record in that context, and is just as easy to reset via tokens.
@@ -29,7 +29,7 @@ Switch to `structlog` (see commit `refactor(core): swap python-json-logger for s
 
 1. **Stay on `python-json-logger`.** Works, but requires bespoke ContextVar plumbing for each case. Became uncomfortable as soon as the first Celery task needed its own bound fields.
 2. **`loguru`.** More "magical" (auto-rotation, threads-on-import). Doesn't play nicely with the Django LOGGING dict config without contortions. Too many opinionated defaults.
-3. **`opentelemetry-sdk` with an OTLP exporter to Loki/Grafana.** Worth doing alongside tracing, but that's a separate step (see roadmap "middle+ extra"). For now we stay on Prometheus metrics + structured stdout logs.
+3. **`opentelemetry-sdk` with an OTLP exporter to Loki/Grafana.** Worth doing alongside tracing, which is out of scope for now. We stay on Prometheus metrics + structured stdout logs.
 
 ## Migration notes
 
@@ -39,5 +39,4 @@ Switch to `structlog` (see commit `refactor(core): swap python-json-logger for s
 ## Related
 
 - [ADR-0001](0001-idempotency-storage.md) — same "single source of truth" approach
-- Commit `refactor(core): swap python-json-logger for structlog with bound contextvars`
 - [`src/apps/core/logging.py`](../../src/apps/core/logging.py)

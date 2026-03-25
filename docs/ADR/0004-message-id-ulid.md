@@ -9,7 +9,7 @@
 
 ## Decision
 
-`id = CharField(primary_key=True, max_length=26, default=lambda: str(ULID()))`.
+`id = CharField(primary_key=True, max_length=26, default=_new_ulid)`, where `_new_ulid()` returns `str(ULID())`. A module-level function rather than a lambda, so migrations can serialise the default.
 
 ULID is a 128-bit identifier: 48-bit millisecond timestamp + 80 bits of cryptographic randomness. Encoded in Crockford base32 it fits in 26 ASCII characters. It sorts lexicographically = chronologically.
 
@@ -20,7 +20,7 @@ ULID is a 128-bit identifier: 48-bit millisecond timestamp + 80 bits of cryptogr
 **+** 26-character ASCII is easy to drop in URLs, logs, or copy/paste. The hyphenated UUID format is visually worse.
 **+** Adjacent ids are not guessable (unlike autoincrement) — you can't scrape someone else's messages by enumeration.
 **−** 26 bytes instead of 8 (bigint) in the index and FKs. At 17M rows/day that's ~430MB/year just for the PK column. Acceptable, but not free.
-**−** It's not a UUID, so it doesn't play nicely with tools that expect the UUID format out of the box (Django Admin, OpenAPI generators). Solved with `CharField` + a hand-written serializer field.
+**−** It's not a UUID, so it doesn't play nicely with tools that expect the UUID format out of the box (Django Admin, OpenAPI generators). Solved by exposing it as a plain string field.
 
 ## Alternatives
 
@@ -32,7 +32,7 @@ ULID is a 128-bit identifier: 48-bit millisecond timestamp + 80 bits of cryptogr
 ## Migration path to UUIDv7
 
 If the Python standard library gains `uuid.uuid7()`:
-1. Swap the default function: `default=lambda: uuid7().hex` (32 hex chars without dashes = a `CharField(32)`).
+1. Make `_new_ulid` (or a new module-level function) return `uuid7().hex` (32 hex chars without dashes, so `max_length=32`).
 2. Old ULIDs stay as-is (valid ASCII identifiers).
 3. No data migration required.
 

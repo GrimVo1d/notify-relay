@@ -5,20 +5,20 @@
 
 ## Context
 
-We need to limit request rate per API key: 100 req/min default + burst 200, individually overridable. Several API instances sit behind a load balancer, so the state has to be shared. Two decisions: the algorithm (fixed window / sliding window / token bucket / leaky bucket) and the storage (in-memory with gossip / Redis / DB).
+We need to limit request rate per API key (100 req/min and a burst of 200 by default, set per key), per client IP for unauthenticated traffic, and much more strictly on login endpoints. Several API instances sit behind a load balancer, so the state has to be shared. Two decisions: the algorithm (fixed window / sliding window / token bucket / leaky bucket) and the storage (in-memory with gossip / Redis / DB).
 
 ## Decision
 
 **Algorithm:** token bucket. **Storage:** Redis. **Atomicity:** a single Lua script `token_bucket.lua` that reads the counter, refills based on elapsed time, checks and decrements tokens — all in one Redis-side operation.
 
-Key format: `rl:<sha256(api_key_full)[:16]>` for authenticated requests, `rl:ip:<remote_addr>` for anonymous ones (for example on `/api/v1/auth/token/`, although those endpoints are currently excluded from the limit and have their own protection).
+Key format: `rl:key:<api_key.pk>` for requests whose key verified, `rl:ip:<client_ip>` for every other request under `/api/v1/` (no key, or a wrong one: guessing keys doesn't buy fresh buckets), and `rl:auth-ip:<client_ip>` for `/api/v1/auth/` and `/admin/login/`. The script takes the current time from Redis `TIME`, so API hosts with skewed clocks share consistent buckets.
 
 ## Consequences
 
 **+** Burst-friendly: short spikes are allowed, sustained ones are not. That matches what service-to-service clients want (not "even RPS" but batch waves).
 **+** Lua atomicity means no TOCTOU between read and decrement. Stays correct at > 1000 RPS without oversubscription.
 **+** State survives worker restarts and pod reschedules. `EXPIRE` on the key cleans up garbage.
-**−** The Lua script must be tested separately (see `tests/unit/test_token_bucket.py` via `fakeredis[lua]`).
+**−** The Lua script needs a Lua-capable Redis in tests; the suite uses `fakeredis[lua]`.
 **−** Redis becomes a hard dependency on the API's critical path. When Redis is down, the middleware can either fail-open (risk of overload) or fail-closed (risk of false 429s). The code fails open and logs, because the rate limiter is downstream-protection, not a security control.
 
 ## Alternatives
@@ -33,4 +33,5 @@ Key format: `rl:<sha256(api_key_full)[:16]>` for authenticated requests, `rl:ip:
 ## Related
 
 - Lua source: [`src/apps/ratelimit/lua/token_bucket.lua`](../../src/apps/ratelimit/lua/token_bucket.lua)
-- Tests with fakeredis[lua]: [`tests/integration/test_e2e.py::test_rate_limit_returns_429_with_retry_after`](../../tests/integration/test_e2e.py)
+- Middleware: [`src/apps/core/middleware.py`](../../src/apps/core/middleware.py)
+- Tests: `tests/integration/test_e2e.py::test_rate_limit_returns_429_with_retry_after` and the rate-limit tests in [`tests/integration/test_api.py`](../../tests/integration/test_api.py)

@@ -15,10 +15,11 @@ Each channel implements the `Channel` protocol (`apps/channels/base.py`):
 class Channel(Protocol):
     def send(self, message: Message) -> ChannelResult: ...
 
+
 @dataclass(frozen=True)
 class ChannelResult:
     success: bool
-    transient: bool        # only meaningful when success=False
+    transient: bool  # only meaningful when success=False
     error_message: str = ""
     http_status: int | None = None
     smtp_code: int | None = None

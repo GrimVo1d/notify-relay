@@ -1,53 +1,59 @@
-# THREAT_MODEL — notify-relay
+# Threat model
 
-Threat model using STRIDE. Assets: API key data, message templates (may carry PII), outbound webhooks (could be abused to attack internal services).
+## Assets and trust boundaries
 
-## Trust boundary
-
-```
-                trust boundary
-[client service] ──TLS──> [API ingress] ──> [API pod] ──> [Postgres]
-                                              │
-                                              ├──> [Redis (broker, ratelimit)]
-                                              ├──> [Worker pods] ──> SMTP / external HTTPS
-                                              └──> [Beat pod]
-```
-
-Everything inside the `trust boundary` (past the ingress) lives in a private subnet. Only workers reach outwards, and only for their stated jobs.
+- **Assets:** API keys and webhook secrets, message contents (recipients, context: often
+  personal data), the ability to send mail from the organisation's domain, network position
+  inside the deployment (reachability of internal services).
+- **Callers:** internal services holding an API key (trusted to send, not to read others'
+  messages); staff users (trusted, manage templates and keys); everyone else (untrusted).
+- **Outbound:** an SMTP relay and arbitrary webhook URLs chosen by callers (untrusted
+  destinations).
 
 ## Threats and mitigations
 
-| ID | STRIDE category | Scenario | Mitigation |
-|----|----|----|----|
-| T-01 | **S**poofing | Forging `X-API-Key` to impersonate another service | `ApiKeyAuthentication`: argon2 + pepper, constant-time verify. Minimum 24 bytes of entropy in the secret. See [ADR-0001](ADR/0001-idempotency-storage.md). |
-| T-02 | **S**poofing | Attacker steals an access JWT and tries to pose as staff | Short access TTL (15 min), refresh blacklist via `TokenBlacklistView` (TODO: add the SimpleJWT blacklist app). HS256 signed with `JWT_SIGNING_KEY` from env. |
-| T-03 | **T**ampering | MitM tampers with the webhook body at the recipient | `X-Notify-Signature: sha256=...` HMAC. Receiver verifies it against the shared secret. See [`apps/channels/security.py`](../src/apps/channels/security.py). |
-| T-04 | **T**ampering | A send request with a malicious `context` that triggers RCE via the template | The Jinja2 `SandboxedEnvironment` blocks `__class__`/`__mro__` escapes. See ADR-0005. |
-| T-05 | **R**epudiation | "I never sent that notification" / "it never arrived" | `delivery_attempts` stores every attempt with http_status/smtp_code, timestamps, and `error_message`. The request id in logs ties the API call to its task and attempt. |
-| T-06 | **I**nformation disclosure | API key leaked through logs | Only the `prefix` is logged, never the full key. The secret lives only as an argon2 hash. The plain value is shown once — on the `POST /api-keys` response. |
-| T-07 | **I**nformation disclosure | Leaking other people's messages through `GET /messages/{id}` | `MessageViewSet.get_queryset()` filters by `request.auth` (API key) — you cannot see someone else's message. Staff sees everything. Covered by `test_message_get_is_scoped_to_owner_api_key`. |
-| T-08 | **I**nformation disclosure | Leak via timing attack against argon2 | `passlib.argon2.verify` uses constant-time comparison. |
-| T-09 | **D**enial of service | Flood `POST /messages` to clog the queue | Token-bucket rate-limit per API key (`X-RateLimit-Remaining` + 429 + `Retry-After`). Celery queues with bounded prefetch (`CELERY_WORKER_PREFETCH_MULTIPLIER=1`). See [ADR-0002](ADR/0002-rate-limit-token-bucket-lua.md). |
-| T-10 | **D**enial of service | Adversary creates many API keys from a staff account to amplify the flood | API-key creation is staff-only. Staff accounts are managed manually. Handled at the org level. |
-| T-11 | **D**enial of service | Huge renders (massive context) → CPU burn in the API pod | Body-size limit at the ingress (LB / gunicorn `--limit-request-line/--limit-request-fields`). In code: no render larger than a 1MB template; we plan to enforce a template_version size cap on create (TODO). |
-| T-12 | **E**levation of privilege | Webhook URL = `http://admin.corp.internal/users` → relay calls it from inside the VPC | **SSRF guard**: `validate_webhook_url()` blocks private subnets (`127/8`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `::1`, `fc00::/7`) and resolves DNS pre-send. Two layers: at message creation (api) and at send (worker). |
-| T-13 | **E**levation of privilege | HTTP client follows a 30x redirect to an internal address | `httpx.post(..., follow_redirects=False)`. See [`webhook.py`](../src/apps/channels/webhook.py). |
-| T-14 | **E**levation of privilege | Replay of an intercepted webhook against the recipient | `X-Notify-Timestamp` header (TODO: include it in the signature; today it's sent separately). The recipient should reject timestamps older than N minutes. |
-| T-15 | **I**nformation disclosure | `dead_letter.payload_snapshot` retains PII indefinitely | The `cleanup_old_messages` beat task clears both `messages` and cascading `dead_letter` (FK CASCADE). 90 day retention, configurable. |
+| ID | Threat | Mitigation |
+|---|---|---|
+| T-01 | Guessing or forging an API key | 192-bit random secret; stored only as `HMAC-SHA256(pepper, secret)`; constant-time compare. Lookup by the separate `key_id`, so verification costs one row and one HMAC. |
+| T-02 | Brute-forcing staff passwords | Per-IP bucket on `/api/v1/auth/` and `/admin/login/` (10/min by default); with `NUM_PROXIES` the real client IP is used behind proxies. |
+| T-03 | Stolen staff JWT | 15-minute access tokens signed with a dedicated `JWT_SIGNING_KEY`. Refresh tokens can't be revoked before expiry (7 days): see residual risks. |
+| T-04 | Reading other services' messages | `GET /messages/{id}` is scoped to the calling key; ids are ULIDs, not sequential. |
+| T-05 | Idempotency collisions between callers | Idempotency is scoped per API key, and only API keys can create messages. |
+| T-06 | Template injection / sandbox escape | Jinja2 `SandboxedEnvironment`; templates are staff-only; any render failure is a 422; template size and output size are capped. |
+| T-07 | HTML injection into mail through `context` | Email bodies are autoescaped and sent as `text/html`. |
+| T-08 | SSRF: webhook to an internal service or cloud metadata | Only globally routable, non-multicast targets; NAT64, 6to4, Teredo, IPv4-compatible, SIIT and site-local IPv6 ranges refused; optional extra `WEBHOOK_BLOCKED_NETWORKS`. Checked at creation and at send. |
+| T-09 | DNS rebinding between check and connect | The worker resolves once and connects to the vetted address, keeping `Host` and SNI. |
+| T-10 | Redirect to an internal address; proxy variables | Redirects are never followed (3xx is a permanent failure); `trust_env=False`. |
+| T-11 | Webhook to the wrong domain through IDN mapping differences (`faß` vs `fass`) | The IDNA 2008 A-label is resolved and sent in both `Host` and SNI. |
+| T-12 | A receiver exhausting worker memory with a huge or endless response | The response body is never read; only the status line and headers. |
+| T-13 | A slow name server holding API workers during validation | The API-side lookup gives up after 2 s and never queues; the URL is then checked only at send time, which is the check that decides the target. |
+| T-14 | Forged or tampered webhooks at the receiver | `X-Notify-Signature` = HMAC-SHA256 over timestamp and body with a per-key secret. |
+| T-15 | Replay of a captured webhook | The timestamp is signed; receivers reject old timestamps and de-duplicate on `X-Notify-Message-Id`. |
+| T-16 | Flooding the queue | Token bucket per API key, per IP for everything else; Celery prefetch 1. An `X-Forwarded-For` entry that isn't an IP address is ignored; IPv6 clients are bucketed by /64. |
+| T-17 | Misconfigured production (debug, default secrets, `ALLOWED_HOSTS=*`) | The `prod` profile refuses to start; it is the image default. |
+| T-18 | Leaking internals in errors | `DEBUG` off in `prod`; readiness reports only `ok`/`error`, details go to the log; webhook failures record only the status code. |
+| T-19 | Supply chain | Dependencies pinned with hashes and audited with `pip-audit` (`make audit`); base image pinned by digest; pre-commit hooks pinned to commit SHAs. |
+| T-20 | Container breakout impact | Non-root user, code owned by root, no compilers or curl in the runtime image. |
+| T-21 | Exposure of the dev stack | Compose binds every port to 127.0.0.1. |
+| T-22 | Personal data kept forever | Finished messages, attempts and dead letters are deleted after 90 days. |
 
 ## Residual risks
 
-1. **Compromised staff account** → creates new API keys with large rate limits and floods email channels. Mitigation: 2FA on staff (outside this service), audit log on key create/use (TODO in ADR-0006).
-2. **Compromised SMTP relay credentials** → an external actor sends mail as our domain. Mitigation: SPF/DKIM/DMARC at the mail-domain level (org task).
-3. **Compromised webhook secret** (`WEBHOOK_HMAC_SECRET`) → the recipient cannot tell forgeries from real traffic. Roadmap mitigation: per-recipient secret instead of a global one, with rotation via the recipient UI.
-
-## Pre-prod security checklist
-
-- [ ] All `dev-insecure-*` secrets replaced.
-- [ ] `WEBHOOK_BLOCKED_NETWORKS` matches the actual private subnets in the VPC (not just the default set).
-- [ ] DNS resolver on worker pods does not return internal domains that resolve to public IPs (DNS rebinding).
-- [ ] Request body size cap at the ingress: ≤ 64KB for `POST /messages`.
-- [ ] CSP / `X-Content-Type-Options: nosniff` / `Strict-Transport-Security` set at the ingress.
-- [ ] `/metrics` restricted to internal-only or basic-auth.
-- [ ] Logs centralized, retention ≥ 30 days, access audited.
-- [ ] `pip-audit` / dependabot scheduled — CVE tracking.
+1. **Unauthenticated metrics.** `/metrics` and the workers' metrics port expose queue sizes and
+   delivery rates. They must stay on the monitoring network.
+2. **No JWT revocation.** A leaked refresh token works until it expires. Adding simplejwt's
+   blacklist app would allow revoking it.
+3. **Compromised staff account.** It can issue keys with high limits and send mail as the
+   organisation. Mitigate with SSO/2FA in front of the admin and SPF/DKIM/DMARC on the domain.
+4. **Per-IP limits behind proxies.** If `NUM_PROXIES` is wrong, or the API is reachable around
+   the proxy, clients either share one bucket (too low) or can pick their IP through
+   `X-Forwarded-For` (too high). The same applies to `X-Forwarded-Proto`.
+5. **Rate limiter fails open.** While Redis is down nothing is limited; the readiness probe
+   reports it.
+6. **At-least-once delivery.** A worker crash after sending and before recording can repeat a
+   delivery; receivers de-duplicate on the message id.
+7. **Lost retries.** A retry the broker loses leaves its message in `sending`; Beat only
+   re-enqueues `queued` messages. Find such rows by `status` and `updated_at` and requeue them
+   as in DEPLOYMENT.
+8. **Probe cost.** `/health/ready` answers any `Host` without a rate limit and runs a database
+   query and a Redis ping per call; keep it off the public ingress.

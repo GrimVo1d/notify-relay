@@ -1,103 +1,145 @@
-# DEPLOYMENT — notify-relay
+# Deployment
 
-## Environment variables
+One image (`docker/Dockerfile`) runs every process; the entrypoint picks the role:
 
-| Name | Type | Default | Description |
-|---|---|---|---|
-| `DJANGO_SETTINGS_MODULE` | str | `notify_relay.settings.dev` | Settings profile: `dev` / `test` / `prod` |
-| `SECRET_KEY` | str | `dev-insecure-change-me` | Django secret. **Must be changed in prod** |
-| `DEBUG` | bool | `0` | `1` for dev only |
-| `ALLOWED_HOSTS` | csv | `*` | Comma-separated hostnames |
-| `DATABASE_URL` | url | `sqlite:///…` | `postgres://user:pass@host:5432/db` |
-| `REDIS_URL` | url | `redis://localhost:6379/0` | Shared Redis (rate-limit, cache) |
-| `CELERY_BROKER_URL` | url | `redis://localhost:6379/1` | Celery broker |
-| `CELERY_RESULT_BACKEND` | url | `redis://localhost:6379/2` | Celery results |
-| `SMTP_HOST` / `PORT` / `USER` / `PASSWORD` / `TLS` | — | mailpit | SMTP settings |
-| `DEFAULT_FROM_EMAIL` | str | `no-reply@notify-relay.internal` | `From:` for the email channel |
-| `JWT_SIGNING_KEY` | str | `dev-insecure-jwt` | JWT signing key. **Must be changed** |
-| `API_KEY_HASH_PEPPER` | str | `dev-insecure-pepper` | Pepper for argon2 API-key hashes. **Change and persist** |
-| `WEBHOOK_HMAC_SECRET` | str | `dev-insecure-webhook-secret` | Global secret for outbound webhook HMAC |
-| `WEBHOOK_TIMEOUT_S` | int | `10` | Timeout on outbound POST |
-| `WEBHOOK_BLOCKED_NETWORKS` | csv | private subnets | CIDR block list — SSRF guard |
-| `RATE_LIMIT_ENABLED` | bool | `1` | Global rate-limit switch |
-| `RATE_LIMIT_DEFAULT_PER_MIN` | int | `100` | Limit for requests without an API key |
-| `RATE_LIMIT_DEFAULT_BURST` | int | `200` | Burst for requests without an API key |
-| `LOG_LEVEL` | str | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `LOG_FORMAT` | str | `plain` | `plain` locally, `json` in prod |
+| Command | Process |
+|---|---|
+| `api` (default) | gunicorn on :8000 (`GUNICORN_WORKERS`, default 4; `GUNICORN_TIMEOUT`, default 30) |
+| `worker <queue>` | Celery worker for `high`, `default` or `low` (`CELERY_CONCURRENCY`, default 4) |
+| `beat` | Celery Beat; run exactly **one** |
+| `migrate` | `manage.py migrate --noinput` |
+| `shell` | Django shell |
+| anything else | executed as is, e.g. `python manage.py createsuperuser` |
 
-See [`src/notify_relay/settings/base.py`](../src/notify_relay/settings/base.py) and [`.env.example`](../.env.example) for the canonical defaults.
+The image defaults to `DJANGO_SETTINGS_MODULE=notify_relay.settings.prod`, runs as an
+unprivileged user on read-only code, and installs dependencies from the hash-pinned
+`requirements.lock`. `docker-compose.yml` is a development stack built on the same image with
+the `dev` profile.
+
+## Configuration
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DJANGO_SETTINGS_MODULE` | `notify_relay.settings.prod` in the image | `dev`, `test` or `prod` |
+| `SECRET_KEY` | — | Django secret |
+| `JWT_SIGNING_KEY` | — | HS256 key for staff JWTs |
+| `API_KEY_HASH_PEPPER` | — | Key for API-key hashes. Changing it invalidates every key |
+| `WEBHOOK_HMAC_SECRET` | — | Webhook signing secret for API keys without their own (keys created via the API always have one) |
+| `ALLOWED_HOSTS` | empty | Comma-separated host names |
+| `DEBUG` | `0` (`1` in `dev`) | Forced off in `prod` |
+| `DATABASE_URL` | SQLite file | `postgres://user:password@host:5432/db` |
+| `REDIS_URL` | `redis://localhost:6379/0` | Rate-limit buckets, readiness check |
+| `CELERY_BROKER_URL` | `redis://localhost:6379/1` | |
+| `CELERY_RESULT_BACKEND` | `redis://localhost:6379/2` | |
+| `SMTP_HOST`, `SMTP_PORT` | `localhost`, `1025` | |
+| `SMTP_USER`, `SMTP_PASSWORD` | empty | |
+| `SMTP_TLS` | `0` | STARTTLS |
+| `DEFAULT_FROM_EMAIL` | `no-reply@notify-relay.internal` | `From:` of outgoing mail |
+| `WEBHOOK_TIMEOUT_S` | `10` | Per-request timeout for webhook POSTs |
+| `WEBHOOK_BLOCKED_NETWORKS` | empty | Extra CIDRs to refuse; non-global addresses are always refused |
+| `RATE_LIMIT_ENABLED` | `1` | |
+| `RATE_LIMIT_DEFAULT_PER_MIN`, `RATE_LIMIT_DEFAULT_BURST` | `100`, `200` | Per-IP limits for requests without a valid API key |
+| `RATE_LIMIT_AUTH_PER_MIN`, `RATE_LIMIT_AUTH_BURST` | `10`, `10` | Per-IP limits on `/api/v1/auth/` and `/admin/login/` |
+| `NUM_PROXIES` | `0` | Trusted reverse proxies in front of the API; per-IP limits then read `X-Forwarded-For` |
+| `SECURE_SSL_REDIRECT` | `1` | `prod` only; set `0` if TLS terminates elsewhere and redirects are done there |
+| `LOG_LEVEL` | `INFO` | |
+| `LOG_FORMAT` | `plain` | `json` or `plain`; `prod` always logs JSON |
+| `CELERY_METRICS_PORT` | unset | Workers: serve Prometheus metrics on this port |
+| `PROMETHEUS_MULTIPROC_DIR` | unset | Workers: scratch directory for multiprocess metrics; emptied at start |
+| `CELERY_BEAT_SCHEDULE_FILE` | `/tmp/celerybeat-schedule` | Beat state file |
+| `CELERY_BEAT_SCHEDULER` | `celery.beat:PersistentScheduler` | Beat scheduler class |
+| `CELERY_LOG_LEVEL` | `INFO` | Workers and Beat |
+
+Per-key rate limits (`rate_limit_per_min`, `burst`) are set when the key is created.
 
 ## Production checklist
 
-- [ ] Replace **every** `dev-insecure-*` secret — `SECRET_KEY`, `JWT_SIGNING_KEY`, `API_KEY_HASH_PEPPER`, `WEBHOOK_HMAC_SECRET`.
-- [ ] `DEBUG=0`, `ALLOWED_HOSTS` set to a concrete list of domains.
-- [ ] `DJANGO_SETTINGS_MODULE=notify_relay.settings.prod`.
-- [ ] `LOG_FORMAT=json`, logs shipped centrally.
-- [ ] `DATABASE_URL` points at a managed Postgres instance (RDS/CloudSQL); the password is not committed.
-- [ ] Migrations applied: `manage.py migrate --check`.
-- [ ] Services deployed separately: `api` (gunicorn), `worker-high`, `worker-default`, `worker-low`, `beat`. **`beat` is a single instance** (it is the source of truth for the schedule).
-- [ ] The load balancer hits `/health/ready` for the readiness check and `/health/live` for liveness.
-- [ ] `/metrics` is reachable only from the internal network (or guarded by basic auth).
-- [ ] Postgres backups configured (point-in-time recovery + 14+ days of retention).
-- [ ] Redis configured with `maxmemory-policy=allkeys-lru` and persistence (RDB or AOF, depending on durability needs).
-- [ ] HSTS, secure cookies, CSRF — enforced by `prod.py` (see the file).
+- [ ] Generate every secret: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+      The `prod` profile refuses to start with empty, short or `dev-`/`ci-`/`test-` values.
+- [ ] `ALLOWED_HOSTS` lists the real host names (the probes don't need it).
+- [ ] TLS terminates at a proxy that sets `X-Forwarded-Proto`; `NUM_PROXIES` matches the
+      number of proxies that append to `X-Forwarded-For`. The API port is reachable only
+      through that proxy: both headers are trusted as they arrive. Entries must be bare
+      addresses (no `:port`), otherwise every client falls back to the proxy's bucket.
+- [ ] `python manage.py migrate` runs before the new `api` and workers start.
+- [ ] Exactly one `beat`; workers for all three queues.
+- [ ] Probes: liveness `GET /health/live`, readiness `GET /health/ready` (both plain HTTP,
+      any `Host`). Keep `/health/*` off the public ingress.
+- [ ] `/metrics` (API) and the workers' metrics port are reachable only from the monitoring
+      network; they are not authenticated. The API's `/metrics` checks `Host`, so the name
+      Prometheus scrapes (e.g. `api`) must be in `ALLOWED_HOSTS`.
+- [ ] PostgreSQL backups. Redis needs no persistence for correctness: lost tasks are
+      re-enqueued by Beat after 15 minutes, buckets simply refill.
+- [ ] Request body size limited at the proxy (64 KiB is plenty for `POST /messages`).
+- [ ] Optional: the Django admin needs its static files collected and served
+      (`collectstatic` into `STATIC_ROOT`); the API and OpenAPI UI work without them.
 
-## docker-compose deploy (single host / dev-stage)
+Smoke-test a built image's production settings without a database:
 
 ```bash
-cp .env.example .env  # edit secrets
-docker compose pull
-docker compose build
-docker compose up -d
-docker compose exec api python manage.py migrate
+docker run --rm -e ALLOWED_HOSTS=relay.internal \
+  -e SECRET_KEY=... -e JWT_SIGNING_KEY=... -e API_KEY_HASH_PEPPER=... -e WEBHOOK_HMAC_SECRET=... \
+  notify-relay:dev python manage.py check --deploy --fail-level WARNING
 ```
 
-Services:
+## Upgrading from API keys with the `nr_live_` prefix
 
-| Service | Command | Role |
+Migration `core.0002` replaces argon2-hashed keys with the `nr_<key_id>_<secret>` format.
+Old keys can't be converted: the migration revokes them, keeping the rows for history.
+Issue new keys (`POST /api/v1/api-keys/`) and hand them to the services before upgrading.
+
+## Metrics
+
+| Metric | Type | Served by |
 |---|---|---|
-| `api` | `gunicorn notify_relay.wsgi` | HTTP layer, port 8000 |
-| `worker-high` | `celery worker -Q high` | OTPs, security-critical |
-| `worker-default` | `celery worker -Q default` | business notifications |
-| `worker-low` | `celery worker -Q low` | digests, cleanup, metrics |
-| `beat` | `celery beat` | scheduler (every minute) |
-| `db` | `postgres:16` | data store |
-| `redis` | `redis:7` | broker + results + rate-limit |
-| `mailpit` | `axllent/mailpit` | dev-only SMTP stand with UI + REST on :8025 |
+| `notify_relay_messages_total{channel,status}` | counter: messages reaching `sent`, `failed` or `dead` | workers |
+| `notify_relay_delivery_attempts_total{channel,result}` | counter: `success`, `transient_error`, `permanent_error` | workers |
+| `notify_relay_delivery_duration_seconds{channel}` | histogram: time in `channel.send()` | workers |
+| `notify_relay_queue_depth{channel}` | gauge: messages in `queued` | API `/metrics` |
+| `notify_relay_dlq_size` | gauge: rows in the dead-letter table | API `/metrics` |
 
-## Metrics and SLIs
+Scrape the API and every worker container. Import `docs/grafana-dashboard.json` into Grafana
+and pick the Prometheus data source. Useful alerts:
 
-`/metrics` exposes a Prometheus endpoint:
+- `/health/ready` failing: the API can't reach PostgreSQL or Redis; the log has the cause.
+- `notify_relay_queue_depth` growing for several minutes: workers are too few or a channel is
+  slow; compare channels and look at `delivery_attempts_total{result="transient_error"}`.
+- `increase(notify_relay_dlq_size[1h]) > 0`: messages are failing permanently or exhausting
+  retries; read `reason` in the dead-letter table.
 
-- `notify_relay_messages_total{channel,status}` — counter of terminal transitions (sent / failed / dead).
-- `notify_relay_delivery_attempts_total{channel,result}` — counter of attempts (success / transient_error / permanent_error).
-- `notify_relay_delivery_duration_seconds{channel}` — histogram of time spent in `channel.send()`.
-- `notify_relay_queue_depth{channel}` — gauge: number of messages in `queued` (refreshed by Beat every 30s).
-- `notify_relay_dlq_size` — gauge: dead-letter table size.
+## Operations
 
-Suggested SLIs:
-- **API success rate**: percentage of `2xx` on `POST /messages`. Target ≥ 99.9%.
-- **Delivery P95 latency**: `histogram_quantile(0.95, rate(notify_relay_delivery_duration_seconds_bucket[5m]))`. Target < 30s (email) / < 2s (webhook).
-- **Queue saturation**: `notify_relay_queue_depth` rising steadily → not enough workers or a channel is down.
-- **DLQ growth rate**: `rate(notify_relay_dlq_size[1h])` > 0 → time to investigate.
+**Why did a message fail?** Every attempt is a row in `messages_api_deliveryattempt`; failed
+and dead messages have a row in `messages_api_deadletter`:
 
-## Security
+```sql
+SELECT m.id, m.channel, m.recipient, d.reason, d.created_at
+FROM messages_api_deadletter d JOIN messages_api_message m ON m.id = d.message_id
+WHERE d.created_at > now() - interval '1 hour'
+ORDER BY d.created_at DESC;
+```
 
-- API keys are stored as `argon2(secret + pepper)`; no plain-text secrets in the DB. Keys cannot be recovered — only reissued.
-- JWT tokens: short access (15 min) + refresh (7 days). HS256 signature.
-- Webhook delivery: URL validation (private subnets blocked), HMAC-SHA256 body signature, no redirects, 10s timeout.
-- Rate-limit: 100/min default + per-key override. Bucket in Redis, atomic Lua.
-- All secrets via env. `.env` is in `.gitignore`.
+**Re-send dead-lettered messages** once the cause is fixed. Clearing `enqueued_at` and setting
+`scheduled_at` hands them to the next Beat run:
 
-## Troubleshooting
+```sql
+BEGIN;
+UPDATE messages_api_message
+SET status = 'queued', enqueued_at = NULL, scheduled_at = now(), updated_at = now()
+WHERE id IN (SELECT message_id FROM messages_api_deadletter WHERE created_at > now() - interval '1 hour');
+DELETE FROM messages_api_deadletter WHERE created_at > now() - interval '1 hour';
+COMMIT;
+```
 
-| Symptom | Where to look | What to do |
-|---|---|---|
-| `/health/ready` returns `503` | the JSON response itself, `checks` field | either `db` or `redis` is failing. Verify `DATABASE_URL` / `REDIS_URL` and port reachability |
-| Messages pile up in `queued` | `notify_relay_queue_depth` grows | check that `worker-default` is up and not in a crash loop; `celery -A notify_relay inspect active` |
-| `429` on every request | `Retry-After` header | the bucket is exhausted. Check the key's `rate_limit_per_min` in the admin; temporarily set `RATE_LIMIT_ENABLED=0` |
-| Every webhook returns `422` | log line `webhook URL resolves to a blocked address range` | the host resolves into a private subnet. Check the DNS answer with `dig`/`host`; allow the recipient's public IP via `WEBHOOK_BLOCKED_NETWORKS` |
-| `502/503` from the API | gunicorn logs | likely a crash loop. `docker compose logs api --tail=200`. Often the migrator never ran |
-| `transient_error` on email | `delivery_attempts.smtp_code` | SMTP 4xx — temporary issue (greylisting, MTA rate-limit). Wait out the backoff |
-| Beat doesn't fire tasks | `worker.*` still consumes `default` tasks fine | check that **exactly one** beat instance is running. Two beats → duplicate tasks and slow processing |
-| OpenAPI schema is empty | `/api/schema/` | `drf-spectacular` couldn't find a `serializer_class` on a view. See warnings from `manage.py spectacular --file /tmp/s.yml` |
+**Broker outage.** Messages accepted while Redis is down still get `202`; publishing the task
+fails, is logged as a warning, and Beat re-enqueues them once `enqueued_at` is 15 minutes old.
+
+**Release scheduled messages right away:**
+`docker compose exec beat celery -A notify_relay call tasks.scheduler.dispatch_scheduled`.
+
+**Rotate a service's key:** create a new key, switch the service, then
+`POST /api/v1/api-keys/{id}/revoke/` on the old one. The new key comes with a new webhook
+secret; receivers must accept both during the switch.
+
+**Retention:** `cleanup_old_messages` deletes `sent`, `failed` and `dead` messages older than
+90 days (with their attempts and dead letters) every night at 03:00 UTC.
