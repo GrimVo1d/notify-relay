@@ -77,8 +77,8 @@ Both implement `send(message) -> ChannelResult` (`apps/channels/`, see ADR-0003)
 | Email (Django SMTP backend, body sent as `text/html`) | accepted by the server | SMTP 4xx, connection errors | SMTP 5xx |
 | Webhook (httpx) | 2xx | 408, 425, 429, 5xx, timeouts, connection errors | other statuses, including 3xx; a URL that no longer passes the SSRF guard |
 
-The webhook POST carries a fixed JSON envelope (`message_id`, `template`, `data` = the
-message context, `timestamp` = creation time) rather than the rendered body. See
+The webhook POST carries the rendered template body as `application/json`; a webhook template
+must render to valid JSON, which is checked when the message is created. See
 [GETTING_STARTED](GETTING_STARTED.md#6-receive-webhooks) for the headers and verification.
 
 ## Templates
@@ -87,7 +87,7 @@ Templates are named, belong to one channel and have immutable, numbered versions
 (`apps/templating/`). They render in a Jinja2 `SandboxedEnvironment`, which blocks
 attribute escapes such as `__class__`. Missing variables render empty
 (`ChainableUndefined`). Email bodies are autoescaped (HTML); subjects and webhook bodies are
-not. Template bodies are capped at 65,536 characters and rendered output at 262,144; any
+not, and a webhook body must be valid JSON (`{{ value | tojson }}` quotes context values). Template bodies are capped at 65,536 characters and rendered output at 262,144; any
 exception during rendering becomes a `RenderError` and a `422`.
 
 ## Security model

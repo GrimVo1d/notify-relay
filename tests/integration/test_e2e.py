@@ -77,6 +77,20 @@ def test_webhook_url_in_private_subnet_is_rejected(api, webhook_template) -> Non
     assert r.status_code == 422
 
 
+def test_webhook_template_rendering_invalid_json_is_rejected(api, webhook_template) -> None:
+    _idem(api, "wh-json")
+    payload = {
+        "channel": "webhook",
+        "recipient": "https://1.1.1.1/x",
+        "template": "event",
+        "context": {"event": 'say "hi"'},
+    }
+    r = api.post("/api/v1/messages/", payload, format="json")
+    assert r.status_code == 422
+    assert r.json()["code"] == "template_render_failed"
+    assert not Message.objects.exists()
+
+
 def test_webhook_retry_then_success(api_key, webhook_template) -> None:
     # Drive _dispatch manually to exercise the transient-then-success path.
     # Celery's eager mode doesn't actually loop on retry, so we simulate the

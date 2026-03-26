@@ -90,21 +90,27 @@ Errors carry a `code` and a `detail` (`validation_error` carries per-field `erro
 | 403 | `api_key_required` | A staff user (JWT or session) tried to send |
 | 409 | `idempotency_conflict` | Same `Idempotency-Key`, different payload |
 | 422 | `validation_error` | Bad body, invalid recipient, blocked webhook URL |
-| 422 | `template_not_found`, `template_render_failed` | Unknown template or version, template failed to render |
+| 422 | `template_not_found`, `template_render_failed` | Unknown template or version, template failed to render (or a webhook body isn't valid JSON) |
 | 429 | `rate_limited` | Bucket empty; wait `Retry-After` seconds |
 
 ## 6. Receive webhooks
 
 For `"channel": "webhook"` the recipient is an `http(s)` URL that must resolve to a globally
 routable address (localhost, private, CGNAT and similar ranges are refused). Internationalised
-host names are resolved and sent in their IDNA 2008 form. The relay POSTs a
-compact JSON envelope:
+host names are resolved and sent in their IDNA 2008 form. The relay POSTs the rendered
+template body as `application/json`. A webhook template must render to valid JSON; use
+`tojson` for context values so quotes and newlines can't break it:
 
-```json
-{"data": {"order_id": 42}, "message_id": "01J…", "template": "order-paid", "timestamp": "2026-…"}
+```bash
+curl -s -X POST http://localhost:8000/api/v1/templates/ \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "order-paid", "channel": "webhook",
+       "body_template": "{\"event\": \"order.paid\", \"order_id\": {{ order_id | tojson }}}"}'
 ```
 
-with these headers:
+A message with `"context": {"order_id": 42}` is posted as `{"event": "order.paid", "order_id": 42}`.
+A body that doesn't parse as JSON is refused with `422 template_render_failed`. The request
+carries these headers:
 
 | Header | Value |
 |---|---|

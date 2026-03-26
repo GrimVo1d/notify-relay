@@ -1,6 +1,7 @@
 """Webhook channel adapter.
 
-Posts a signed JSON envelope to the recipient URL. The URL is re-validated
+Posts the message's rendered body (JSON, checked when the message was
+created) to the recipient URL, signed with the sending key's secret. The URL is re-validated
 at send time and the connection goes to the address that validation
 approved (the original host name is kept in ``Host`` and TLS SNI), so a
 second DNS answer can't point the request somewhere internal. Proxy
@@ -12,7 +13,6 @@ policy.
 from __future__ import annotations
 
 import ipaddress
-import json
 import time
 from collections.abc import Callable
 from typing import Any
@@ -48,7 +48,7 @@ class WebhookChannel:
             )
 
         url = httpx.URL(message.recipient)
-        body = self._build_body(message)
+        body = message.rendered_body.encode("utf-8")
         timestamp = str(int(time.time()))
         headers = {
             "Host": url.netloc.decode("ascii"),
@@ -93,20 +93,6 @@ class WebhookChannel:
             http_status=status_code,
             error_message=f"http {status_code}",
         )
-
-    @staticmethod
-    def _build_body(message: Message) -> bytes:
-        payload: dict[str, object] = {
-            "message_id": str(message.id),
-            "template": (
-                message.template_version.template.name
-                if message.template_version_id and message.template_version
-                else None
-            ),
-            "data": message.context or {},
-            "timestamp": (message.created_at.isoformat() if message.created_at else None),
-        }
-        return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
 def _default_secret(message: Message) -> str:

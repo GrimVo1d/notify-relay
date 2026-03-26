@@ -9,14 +9,16 @@ runtime.
 Autoescape policy:
     * ``email`` channel → autoescape **on** (treat body as HTML; user-supplied
       context can't be interpreted as markup).
-    * ``webhook`` channel → autoescape **off** (body is plain text or JSON;
-      escaping would mangle JSON encoding).
+    * ``webhook`` channel → autoescape **off**; the body is posted as is with
+      ``Content-Type: application/json``, so it must render to valid JSON
+      (use ``{{ value | tojson }}`` for values from the context).
     * Email subject lines are always rendered with autoescape off — they're
       headers, not HTML.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -81,4 +83,9 @@ def render(
 
     if len(body) + len(subject) > MAX_RENDERED_CHARS:
         raise RenderError(f"rendered message exceeds {MAX_RENDERED_CHARS} characters")
+    if channel == Channel.WEBHOOK:
+        try:
+            json.loads(body)
+        except ValueError as exc:
+            raise RenderError(f"webhook body is not valid JSON: {exc}") from exc
     return RenderedMessage(subject=subject, body=body)

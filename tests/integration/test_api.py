@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import socket
 from datetime import timedelta
 
@@ -356,6 +355,7 @@ def test_webhook_connects_to_vetted_ip_and_signs_with_key_secret(
         channel="webhook",
         recipient="https://hooks.example.internal/in",
         context={"event": "x"},
+        rendered_body='{"event": "x"}',
         template_version=webhook_template,
     )
 
@@ -373,7 +373,8 @@ def test_webhook_connects_to_vetted_ip_and_signs_with_key_secret(
         sent.headers["x-notify-timestamp"],
         sent.headers["x-notify-signature"],
     )
-    assert json.loads(sent.content)["message_id"] == str(msg.id)
+    assert sent.content == b'{"event": "x"}'
+    assert sent.headers["x-notify-message-id"] == str(msg.id)
 
 
 def test_webhook_idn_host_uses_one_a_label_everywhere(

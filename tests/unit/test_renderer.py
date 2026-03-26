@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -75,11 +76,11 @@ def test_sandbox_blocks_dunder_attribute_introspection() -> None:
     # ``Undefined`` for any underscore-prefixed attribute, which renders as
     # an empty string — no class objects ever leak into the output.
     out = render(
-        _v("attempt:[{{ ctx.__class__ }}][{{ ctx.__init__ }}]"),
+        _v('{"attempt": "[{{ ctx.__class__ }}][{{ ctx.__init__ }}]"}'),
         {"ctx": object()},
         channel=Channel.WEBHOOK,
     )
-    assert out.body == "attempt:[][]"
+    assert out.body == '{"attempt": "[][]"}'
 
 
 def test_sandbox_rejects_chained_class_escape() -> None:
@@ -103,3 +104,15 @@ def test_render_error_wraps_runtime_errors_from_expressions() -> None:
 def test_render_error_on_oversized_output() -> None:
     with pytest.raises(RenderError, match="exceeds"):
         render(_v("{{ 'x' * n }}"), {"n": 10**6}, channel=Channel.WEBHOOK)
+
+
+def test_webhook_body_must_be_valid_json() -> None:
+    with pytest.raises(RenderError, match="not valid JSON"):
+        render(_v('{"title": "{{ title }}"}'), {"title": 'say "hi"'}, channel=Channel.WEBHOOK)
+
+
+def test_tojson_keeps_webhook_body_valid_for_any_context() -> None:
+    out = render(
+        _v('{"title": {{ title | tojson }}}'), {"title": 'say "hi"'}, channel=Channel.WEBHOOK
+    )
+    assert json.loads(out.body) == {"title": 'say "hi"'}
