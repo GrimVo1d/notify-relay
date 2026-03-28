@@ -69,7 +69,7 @@ Per-key rate limits (`rate_limit_per_min`, `burst`) are set when the key is crea
       network; they are not authenticated. The API's `/metrics` checks `Host`, so the name
       Prometheus scrapes (e.g. `api`) must be in `ALLOWED_HOSTS`.
 - [ ] PostgreSQL backups. Redis needs no persistence for correctness: lost tasks are
-      re-enqueued by Beat after 15 minutes, buckets simply refill.
+      re-enqueued by Beat after 15 minutes (lost retries after 2 hours), buckets simply refill.
 - [ ] Request body size limited at the proxy (64 KiB is plenty for `POST /messages`).
 - [ ] Optional: the Django admin needs its static files collected and served
       (`collectstatic` into `STATIC_ROOT`); the API and OpenAPI UI work without them.

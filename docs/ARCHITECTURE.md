@@ -18,7 +18,7 @@ service ──HTTP──▶ probes → request id → rate limit → auth → vi
 |---|---|
 | `api` | REST API, Django admin, OpenAPI, health probes, `/metrics` with database-derived gauges |
 | `worker-<queue>` | Celery prefork workers, one deployment per priority queue; serve delivery metrics on `CELERY_METRICS_PORT` |
-| `beat` | Single instance. Every minute releases due scheduled messages and re-enqueues lost ones; at 03:00 UTC deletes finished messages older than 90 days |
+| `beat` | Single instance. Every minute releases due scheduled messages and re-enqueues lost ones and stuck retries; at 03:00 UTC deletes finished messages older than 90 days |
 | PostgreSQL | Messages, attempts, dead letters, templates, API keys; the source of truth |
 | Redis | Celery broker and result backend (db 1 and 2), rate-limit buckets (db 0) |
 
@@ -51,8 +51,9 @@ service ──HTTP──▶ probes → request id → rate limit → auth → vi
    broker is unreachable the caller still gets `202`; the message is picked up as stranded.
    Scheduled messages keep `enqueued_at = NULL` until Beat's `dispatch_scheduled` releases them.
    The same job re-enqueues `queued` messages whose `enqueued_at` is older than 15 minutes
-   (a task lost by the broker). Rows are claimed with `SELECT … FOR UPDATE SKIP LOCKED`, so
-   several Beat runs can't double-publish.
+   (a task lost by the broker), and `sending` messages untouched for 2 hours (a lost retry:
+   they go back to `queued` with `claimed_by` cleared). Rows are claimed with
+   `SELECT … FOR UPDATE SKIP LOCKED`, so several Beat runs can't double-publish.
 3. **Deliver** (`tasks/delivery.py`). The task locks the row, skips it if already finished,
    claims it (`sending`, with its task id in `claimed_by`) and calls the channel. A second task
    for the same message, e.g. from the stranded re-enqueue, finds it claimed and stops; the

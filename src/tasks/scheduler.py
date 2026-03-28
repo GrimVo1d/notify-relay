@@ -1,10 +1,11 @@
 """Beat-driven housekeeping tasks.
 
 * :func:`dispatch_scheduled` enqueues ``queued`` messages whose ``scheduled_at``
-  has arrived, and re-enqueues ``queued`` messages that were handed to the
-  broker long ago but never picked up (lost on a broker restart). Rows are
-  claimed with ``SELECT ... FOR UPDATE SKIP LOCKED`` on PostgreSQL, stamped
-  with ``enqueued_at`` and only sent to the broker after the commit.
+  has arrived, re-enqueues ``queued`` messages that were handed to the broker
+  long ago but never picked up (lost on a broker restart), and puts back
+  ``sending`` messages whose task is gone (a lost retry). Rows are claimed
+  with ``SELECT ... FOR UPDATE SKIP LOCKED`` on PostgreSQL, stamped with
+  ``enqueued_at`` and only sent to the broker after the commit.
 * :func:`cleanup_old_messages` deletes terminal messages older than the
   retention window in fixed-size batches to avoid one giant DELETE.
 """
@@ -26,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 DISPATCH_BATCH_SIZE = 200
 REENQUEUE_AFTER = timedelta(minutes=15)
+# Longer than any wait between two runs of one task: the longest retry
+# countdown (one hour) or the broker's visibility timeout before it redelivers
+# a crashed worker's task (65 minutes, see settings), plus the time limit.
+STALE_SENDING_AFTER = timedelta(hours=2)
 CLEANUP_AGE_DAYS = 90
 CLEANUP_BATCH_SIZE = 1000
 _TERMINAL_STATUSES = (MessageStatus.SENT, MessageStatus.FAILED, MessageStatus.DEAD)
@@ -33,20 +38,24 @@ _TERMINAL_STATUSES = (MessageStatus.SENT, MessageStatus.FAILED, MessageStatus.DE
 
 @shared_task(name="tasks.scheduler.dispatch_scheduled")
 def dispatch_scheduled() -> int:
-    """Enqueue due and stranded messages. Returns how many were enqueued."""
+    """Enqueue due, stranded and stale messages. Returns how many were enqueued."""
     now = timezone.now()
     due = Q(enqueued_at__isnull=True, scheduled_at__lte=now)
     stranded = Q(enqueued_at__lt=now - REENQUEUE_AFTER)
+    stale = Q(status=MessageStatus.SENDING, updated_at__lt=now - STALE_SENDING_AFTER)
     with transaction.atomic():
-        qs = Message.objects.filter(due | stranded, status=MessageStatus.QUEUED).order_by(
-            "scheduled_at", "created_at"
-        )
+        qs = Message.objects.filter(
+            ((due | stranded) & Q(status=MessageStatus.QUEUED)) | stale
+        ).order_by("scheduled_at", "created_at")
         if connection.features.has_select_for_update_skip_locked:
             qs = qs.select_for_update(skip_locked=True)
         else:
             qs = qs.select_for_update()
         batch = list(qs[:DISPATCH_BATCH_SIZE])
-        Message.objects.filter(pk__in=[m.pk for m in batch]).update(enqueued_at=now)
+        # A new task gets a new id, so a late run of the old one stops as a duplicate.
+        Message.objects.filter(pk__in=[m.pk for m in batch]).update(
+            status=MessageStatus.QUEUED, claimed_by="", enqueued_at=now, updated_at=now
+        )
         transaction.on_commit(lambda: _enqueue_all(batch))
     if batch:
         logger.info("dispatch_scheduled enqueued=%s", len(batch))

@@ -178,6 +178,10 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TASK_TIME_LIMIT = 60
 CELERY_TASK_SOFT_TIME_LIMIT = 50
+# Redis redelivers a task not acked within this time. It must exceed the longest
+# retry countdown (tasks.delivery.RETRY_BACKOFF_MAX_S), or a waiting retry runs
+# twice; tasks.scheduler.STALE_SENDING_AFTER must exceed it in turn.
+CELERY_BROKER_TRANSPORT_OPTIONS = {"visibility_timeout": 3600 + 300}
 
 CELERY_TASK_QUEUES = (
     Queue("high"),

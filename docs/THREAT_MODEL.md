@@ -51,9 +51,7 @@
 5. **Rate limiter fails open.** While Redis is down nothing is limited; the readiness probe
    reports it.
 6. **At-least-once delivery.** A worker crash after sending and before recording can repeat a
-   delivery; receivers de-duplicate on the message id.
-7. **Lost retries.** A retry the broker loses leaves its message in `sending`; Beat only
-   re-enqueues `queued` messages. Find such rows by `status` and `updated_at` and requeue them
-   as in DEPLOYMENT.
-8. **Probe cost.** `/health/ready` answers any `Host` without a rate limit and runs a database
+   delivery; receivers de-duplicate on the message id. A retry lost by the broker leaves the
+   message in `sending`; Beat puts it back in the queue after 2 hours, so it arrives late.
+7. **Probe cost.** `/health/ready` answers any `Host` without a rate limit and runs a database
    query and a Redis ping per call; keep it off the public ingress.

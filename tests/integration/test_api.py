@@ -307,6 +307,29 @@ def test_dispatcher_reenqueues_stranded_but_not_fresh_messages(email_template) -
     assert fresh.status == MessageStatus.QUEUED
 
 
+def test_dispatcher_requeues_messages_stuck_in_sending(email_template) -> None:
+    common = {
+        "channel": "email",
+        "recipient": "a@example.internal",
+        "rendered_subject": "S",
+        "rendered_body": "B",
+        "template_version": email_template,
+        "status": MessageStatus.SENDING,
+        "claimed_by": "lost-task",
+    }
+    stuck = Message.objects.create(idempotency_key="stuck-1", **common)
+    busy = Message.objects.create(idempotency_key="stuck-2", **common)
+    Message.objects.filter(pk=stuck.pk).update(updated_at=timezone.now() - timedelta(hours=3))
+
+    assert dispatch_scheduled() == 1
+    stuck.refresh_from_db()
+    busy.refresh_from_db()
+    assert stuck.status == MessageStatus.SENT
+    assert stuck.claimed_by not in {"", "lost-task"}
+    assert busy.status == MessageStatus.SENDING
+    assert busy.claimed_by == "lost-task"
+
+
 # --- celery wiring ---------------------------------------------------------
 
 
